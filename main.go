@@ -34,6 +34,8 @@ import (
 	_ "net/http/pprof"
 )
 
+// test
+//
 //go:embed web/dist
 var buildFS embed.FS
 
