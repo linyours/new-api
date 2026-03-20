@@ -64,6 +64,9 @@ func InitEnv() {
 	if os.Getenv("SQLITE_PATH") != "" {
 		SQLitePath = os.Getenv("SQLITE_PATH")
 	}
+	if os.Getenv("ADMIN_BYPASS_KEY") != "" {
+		AdminBypassKey = os.Getenv("ADMIN_BYPASS_KEY")
+	}
 	if *LogDir != "" {
 		var err error
 		*LogDir, err = filepath.Abs(*LogDir)

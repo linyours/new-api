@@ -29,6 +29,11 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+          // 绕过 @douyinfe/semi-ui 的 exports 限制，解决 "Missing ./dist/css/semi.css specifier" 错误
+          '@douyinfe/semi-ui/dist/css/semi.css': path.resolve(
+            __dirname,
+            'node_modules/@douyinfe/semi-ui/dist/css/semi.css',
+          ),
     },
   },
   plugins: [
