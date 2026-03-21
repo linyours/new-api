@@ -461,7 +461,6 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 	if !discountMultiplier.Equal(decimal.NewFromInt(1)) {
 		// 落表：有用户折扣乘子时写入 group_ratio（与 OptionsManager 有折扣时用 discount 覆盖 ratio 一致）
 		other["group_ratio"] = discountMultiplier.InexactFloat64()
-		other["discount_int_rounding"] = service.GetDiscountIntRoundingMode()
 	}
 	if adminRejectReason != "" {
 		other["reject_reason"] = adminRejectReason
