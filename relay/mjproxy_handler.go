@@ -194,6 +194,8 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		}
 	}
 
+	finalQuota, mult := service.MjPerCallQuotaAfterUserDiscount(c.GetString("username"), info.UsingGroup, modelName, priceData.Quota)
+
 	userQuota, err := model.GetUserQuota(info.UserId, false)
 	if err != nil {
 		return &dto.MidjourneyResponse{
@@ -202,7 +204,7 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		}
 	}
 
-	if userQuota-priceData.Quota < 0 {
+	if userQuota-finalQuota < 0 {
 		return &dto.MidjourneyResponse{
 			Code:        4,
 			Description: "quota_not_enough",
@@ -217,7 +219,7 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	}
 	defer func() {
 		if mjResp.StatusCode == 200 && mjResp.Response.Code == 1 {
-			err := service.PostConsumeQuota(info, priceData.Quota, 0, true)
+			err := service.PostConsumeQuota(info, finalQuota, 0, true)
 			if err != nil {
 				common.SysLog("error consuming token remain quota: " + err.Error())
 			}
@@ -225,18 +227,19 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 			tokenName := c.GetString("token_name")
 			logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, constant.MjActionSwapFace)
 			other := service.GenerateMjOtherInfo(info, priceData)
+			service.EnrichMjConsumeOtherWithDiscount(c, info, modelName, priceData.GroupRatioInfo.GroupRatio, priceData.Quota, mult, other)
 			model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
 				ChannelId: info.ChannelId,
 				ModelName: modelName,
 				TokenName: tokenName,
-				Quota:     priceData.Quota,
+				Quota:     finalQuota,
 				Content:   logContent,
 				TokenId:   info.TokenId,
 				Group:     info.UsingGroup,
 				Other:     other,
 			})
-			model.UpdateUserUsedQuotaAndRequestCount(info.UserId, priceData.Quota)
-			model.UpdateChannelUsedQuota(info.ChannelId, priceData.Quota)
+			model.UpdateUserUsedQuotaAndRequestCount(info.UserId, finalQuota)
+			model.UpdateChannelUsedQuota(info.ChannelId, finalQuota)
 		}
 	}()
 	midjResponse := &mjResp.Response
@@ -257,7 +260,7 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 		Progress:    "0%",
 		FailReason:  "",
 		ChannelId:   c.GetInt("channel_id"),
-		Quota:       priceData.Quota,
+		Quota:       finalQuota,
 	}
 	err = midjourneyTask.Insert()
 	if err != nil {
@@ -501,6 +504,8 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		}
 	}
 
+	finalQuota, mult := service.MjPerCallQuotaAfterUserDiscount(c.GetString("username"), relayInfo.UsingGroup, modelName, priceData.Quota)
+
 	userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
 	if err != nil {
 		return &dto.MidjourneyResponse{
@@ -509,7 +514,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		}
 	}
 
-	if consumeQuota && userQuota-priceData.Quota < 0 {
+	if consumeQuota && userQuota-finalQuota < 0 {
 		return &dto.MidjourneyResponse{
 			Code:        4,
 			Description: "quota_not_enough",
@@ -524,25 +529,26 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 
 	defer func() {
 		if consumeQuota && midjResponseWithStatus.StatusCode == 200 {
-			err := service.PostConsumeQuota(relayInfo, priceData.Quota, 0, true)
+			err := service.PostConsumeQuota(relayInfo, finalQuota, 0, true)
 			if err != nil {
 				common.SysLog("error consuming token remain quota: " + err.Error())
 			}
 			tokenName := c.GetString("token_name")
 			logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s，ID %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, midjRequest.Action, midjResponse.Result)
 			other := service.GenerateMjOtherInfo(relayInfo, priceData)
+			service.EnrichMjConsumeOtherWithDiscount(c, relayInfo, modelName, priceData.GroupRatioInfo.GroupRatio, priceData.Quota, mult, other)
 			model.RecordConsumeLog(c, relayInfo.UserId, model.RecordConsumeLogParams{
 				ChannelId: relayInfo.ChannelId,
 				ModelName: modelName,
 				TokenName: tokenName,
-				Quota:     priceData.Quota,
+				Quota:     finalQuota,
 				Content:   logContent,
 				TokenId:   relayInfo.TokenId,
 				Group:     relayInfo.UsingGroup,
 				Other:     other,
 			})
-			model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, priceData.Quota)
-			model.UpdateChannelUsedQuota(relayInfo.ChannelId, priceData.Quota)
+			model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, finalQuota)
+			model.UpdateChannelUsedQuota(relayInfo.ChannelId, finalQuota)
 		}
 	}()
 
@@ -570,7 +576,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 		Progress:    "0%",
 		FailReason:  "",
 		ChannelId:   c.GetInt("channel_id"),
-		Quota:       priceData.Quota,
+		Quota:       0,
 	}
 	if midjResponse.Code == 3 {
 		//无实例账号自动禁用渠道（No available account instance）
@@ -614,6 +620,12 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	if midjResponse.Code == 1 && midjRequest.Action == "UPLOAD" {
 		midjourneyTask.Progress = "100%"
 		midjourneyTask.Status = "SUCCESS"
+	}
+	// 与 defer 实际扣费一致：会扣费时存折后 quota，供失败退费（UpdateMidjourneyTaskBulk）按 task.Quota 退还
+	if consumeQuota {
+		midjourneyTask.Quota = finalQuota
+	} else {
+		midjourneyTask.Quota = priceData.Quota
 	}
 	err = midjourneyTask.Insert()
 	if err != nil {

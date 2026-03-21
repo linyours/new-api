@@ -12,11 +12,13 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
 
 // LogTaskConsumption 记录任务消费日志和统计信息（仅记录，不涉及实际扣费）。
 // 实际扣费已由 BillingSession（PreConsumeBilling + SettleBilling）完成。
-func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
+// preQuotaUndiscounted：RelayTask 定价得到的折前整数 quota；billedQuota：SettleBilling 使用的折后额度；mult：用户折扣乘子。
+func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo, preQuotaUndiscounted, billedQuota int, mult decimal.Decimal) {
 	tokenName := c.GetString("token_name")
 	logContent := fmt.Sprintf("操作 %s", info.Action)
 	// 支持任务仅按次计费
@@ -46,18 +48,19 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
 		other["is_model_mapped"] = true
 		other["upstream_model_name"] = info.UpstreamModelName
 	}
+	EnrichMjConsumeOtherWithDiscount(c, info, info.OriginModelName, info.PriceData.GroupRatioInfo.GroupRatio, preQuotaUndiscounted, mult, other)
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
 		ChannelId: info.ChannelId,
 		ModelName: info.OriginModelName,
 		TokenName: tokenName,
-		Quota:     info.PriceData.Quota,
+		Quota:     billedQuota,
 		Content:   logContent,
 		TokenId:   info.TokenId,
 		Group:     info.UsingGroup,
 		Other:     other,
 	})
-	model.UpdateUserUsedQuotaAndRequestCount(info.UserId, info.PriceData.Quota)
-	model.UpdateChannelUsedQuota(info.ChannelId, info.PriceData.Quota)
+	model.UpdateUserUsedQuotaAndRequestCount(info.UserId, billedQuota)
+	model.UpdateChannelUsedQuota(info.ChannelId, billedQuota)
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +143,30 @@ func taskModelName(task *model.Task) string {
 	return task.Properties.OriginModelName
 }
 
+// resolveTaskUsernameForDiscount 异步任务完成阶段从 UserId 取 Username（Task 上无 Username 字段）。
+func resolveTaskUsernameForDiscount(task *model.Task) string {
+	if task == nil {
+		return ""
+	}
+	u, err := model.GetUserById(task.UserId, false)
+	if err != nil || u == nil {
+		return ""
+	}
+	return strings.TrimSpace(u.Username)
+}
+
+// applyTaskUserDiscountToIntQuota 将「折前」实际应扣额度转为与 task.Quota（提交时已折后）同口径。
+func applyTaskUserDiscountToIntQuota(task *model.Task, preQuota int) int {
+	if preQuota <= 0 || task == nil {
+		return preQuota
+	}
+	username := resolveTaskUsernameForDiscount(task)
+	group := strings.TrimSpace(task.Group)
+	modelName := taskModelName(task)
+	q, _ := MjPerCallQuotaAfterUserDiscount(username, group, modelName, preQuota)
+	return q
+}
+
 // RefundTaskQuota 统一的任务失败退款逻辑。
 // 当异步任务失败时，将预扣的 quota 退还给用户（支持钱包和订阅），并退还令牌额度。
 func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) {
@@ -175,12 +202,13 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) {
 }
 
 // RecalculateTaskQuota 通用的异步差额结算。
-// actualQuota 是任务完成后的实际应扣额度，与预扣额度 (task.Quota) 做差额结算。
+// actualQuota 是任务完成后的实际应扣额度（折前口径，与 PreConsume/定价一致），与预扣额度 (task.Quota，折后) 比较前会先乘同一用户折扣。
 // reason 用于日志记录（例如 "token重算" 或 "adaptor调整"）。
 func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int, reason string) {
 	if actualQuota <= 0 {
 		return
 	}
+	actualQuota = applyTaskUserDiscountToIntQuota(task, actualQuota)
 	preConsumedQuota := task.Quota
 	quotaDelta := actualQuota - preConsumedQuota
 

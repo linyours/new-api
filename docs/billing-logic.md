@@ -804,7 +804,7 @@ if info.Billing == nil && !info.PriceData.FreeModel {
 在 `RelayTask()`：
 
 - `defer`：若 `taskErr != nil`，调用 `relayInfo.Billing.Refund(c)`
-- 成功：`service.SettleBilling(c, relayInfo, result.Quota)` 完成差额结算，并记录日志
+- 成功：折前 `result.Quota` 经 `MjPerCallQuotaAfterUserDiscount` 得折后 `billed`，`SettleBilling(c, relayInfo, billed)` 完成差额结算；`LogTaskConsumption` 落库折前/折后与折扣字段；`task.Quota = billed`（失败退费与差额结算同口径）
 
 见：
 
@@ -815,9 +815,12 @@ defer func() {
   }
 }()
 if taskErr == nil {
-  service.SettleBilling(c, relayInfo, result.Quota)
-  service.LogTaskConsumption(c, relayInfo)
-  // insert task (task.Quota = result.Quota)
+  preQ := result.Quota
+  billed, mult := service.MjPerCallQuotaAfterUserDiscount(
+    c.GetString("username"), relayInfo.UsingGroup, relayInfo.OriginModelName, preQ)
+  service.SettleBilling(c, relayInfo, billed)
+  service.LogTaskConsumption(c, relayInfo, preQ, billed, mult)
+  // insert task (task.Quota = billed)
 }
 ```
 
@@ -826,7 +829,7 @@ if taskErr == nil {
 任务提交成功后会入库，后续由轮询/回调更新任务状态。任务侧的退款与差额结算在 `service/task_billing.go`：
 
 - `RefundTaskQuota()`：任务失败时退还 `task.Quota`（钱包/订阅 + token）
-- `RecalculateTaskQuota()`：任务完成后若实际费用与预扣不同，做差额结算（可补扣/退还）
+- `RecalculateTaskQuota()`：任务完成后若实际费用（折前）经同一用户折扣后与 `task.Quota`（折后预扣）不同，做差额结算（可补扣/退还）
 - `RecalculateTaskQuotaByTokens()`：若任务返回 totalTokens 且模型配置为倍率计费，可按 tokens 重算实际费用并差额结算
 
 见：
