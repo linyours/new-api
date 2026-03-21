@@ -155,18 +155,6 @@ func resolveTaskUsernameForDiscount(task *model.Task) string {
 	return strings.TrimSpace(u.Username)
 }
 
-// applyTaskUserDiscountToIntQuota 将「折前」实际应扣额度转为与 task.Quota（提交时已折后）同口径。
-func applyTaskUserDiscountToIntQuota(task *model.Task, preQuota int) int {
-	if preQuota <= 0 || task == nil {
-		return preQuota
-	}
-	username := resolveTaskUsernameForDiscount(task)
-	group := strings.TrimSpace(task.Group)
-	modelName := taskModelName(task)
-	q, _ := MjPerCallQuotaAfterUserDiscount(username, group, modelName, preQuota)
-	return q
-}
-
 // RefundTaskQuota 统一的任务失败退款逻辑。
 // 当异步任务失败时，将预扣的 quota 退还给用户（支持钱包和订阅），并退还令牌额度。
 func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) {
@@ -186,6 +174,9 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) {
 
 	// 3. 记录日志
 	other := taskBillingOther(task)
+	username := resolveTaskUsernameForDiscount(task)
+	mult := GetUserDiscountMultiplier(username, strings.TrimSpace(task.Group), taskModelName(task))
+	EnrichOtherWithPostDiscountQuotaUSD(username, strings.TrimSpace(task.Group), taskModelName(task), quota, mult, other)
 	other["task_id"] = task.TaskID
 	other["reason"] = reason
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
@@ -208,7 +199,11 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	if actualQuota <= 0 {
 		return
 	}
-	actualQuota = applyTaskUserDiscountToIntQuota(task, actualQuota)
+	username := resolveTaskUsernameForDiscount(task)
+	group := strings.TrimSpace(task.Group)
+	modelName := taskModelName(task)
+	preDiscountActual := actualQuota
+	actualQuota, mult := MjPerCallQuotaAfterUserDiscount(username, group, modelName, preDiscountActual)
 	preConsumedQuota := task.Quota
 	quotaDelta := actualQuota - preConsumedQuota
 
@@ -249,6 +244,7 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 		logQuota = -quotaDelta
 	}
 	other := taskBillingOther(task)
+	EnrichOtherWithPreDiscountQuotaUSD(username, group, modelName, preDiscountActual, mult, other)
 	other["task_id"] = task.TaskID
 	//other["reason"] = reason
 	other["pre_consumed_quota"] = preConsumedQuota
