@@ -95,7 +95,6 @@ func EnrichOtherWithPreDiscountQuotaUSD(username, group, modelName string, preQu
 	setPlatformDiscountMultiplierOther(username, group, modelName, other)
 	if !mult.Equal(decimal.NewFromInt(1)) {
 		other["group_ratio"] = mult.InexactFloat64()
-		other["discount_int_rounding"] = GetDiscountIntRoundingMode()
 	}
 }
 
@@ -114,7 +113,6 @@ func EnrichOtherWithPostDiscountQuotaUSD(username, group, modelName string, post
 	setPlatformDiscountMultiplierOther(username, group, modelName, other)
 	if !mult.Equal(one) {
 		other["group_ratio"] = mult.InexactFloat64()
-		other["discount_int_rounding"] = GetDiscountIntRoundingMode()
 	}
 }
 
