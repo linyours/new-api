@@ -37,7 +37,7 @@ const (
 	// v2-agent：此前未过滤 type，升级命名空间避免误用旧缓存
 	discountMultiplierCacheNamespace = "new-api:user_discount_multiplier:v2-agent"
 	platformDiscountCacheNamespace   = "new-api:platform_discount_multiplier:v1"
-	defaultCacheTTLSeconds           = 60
+	defaultCacheTTLSeconds           = 1
 	defaultCacheCapacity            = 100000
 )
 

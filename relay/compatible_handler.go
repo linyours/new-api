@@ -451,7 +451,7 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 	// 折后目标美金（6 位）：preUSD * 用户折扣乘子；乘子为 1 时等于折前美金，始终落表
 	targetUSD := preDiscountQuota.Div(dQuotaPerUnit).Mul(discountMultiplier).Round(6)
 	other["discount_target_usd"] = targetUSD.StringFixed(6)
-	other["pre_user_discount_usd"] = preDiscountQuota.Div(dQuotaPerUnit).Round(6).StringFixed(6)
+	other["pre_user_discount_usd"] = preDiscountQuota
 	// 落表：平台给代理的折扣（type=PLATFORM），与 Java getDiscountConfigForAgent 一致；不参与结算乘子
 	if appid, ok := service.DiscountAppIDFromUsername(ctx.GetString("username")); ok {
 		platformMult := service.GetPlatformToAgentDiscountMultiplier(appid, relayInfo.UsingGroup, relayInfo.OriginModelName)

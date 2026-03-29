@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -211,11 +212,65 @@ type RecordTaskBillingLogParams struct {
 	Other     map[string]interface{}
 }
 
+// FillRefundTaskBillingOtherFunc 由 service.init 或 main 注入，在退费日志落库前补齐 discount_* / group_ratio 等字段；
+// 避免 model 包直接依赖 service 产生循环引用。若 other 已含有效 discount_target_usd 则跳过（兼容已 enrich 的调用方）。
+var FillRefundTaskBillingOtherFunc func(username string, group string, modelName string, quota int, other map[string]interface{})
+
+// refundOtherMissingDiscountTargetUSD 为 true 时表示需要在落库前补全折扣字段。
+// 注意：仅当 discount_target_usd 为非空字符串时才视为已落表；若为 float64/json.Number 等（历史或异常数据），
+// 旧实现会误判为「已存在」从而跳过整个 enrich，导致 other 只有 task_id/reason。
+func refundOtherMissingDiscountTargetUSD(other map[string]interface{}) bool {
+	if other == nil {
+		return false
+	}
+	v, ok := other["discount_target_usd"]
+	if !ok || v == nil {
+		return true
+	}
+	s, isStr := v.(string)
+	if !isStr {
+		return true
+	}
+	return strings.TrimSpace(s) == ""
+}
+
+// applyMinimalRefundBillingOtherFields 无 service 回调时的兜底（等价于用户折扣乘子=1），保证字段非空便于对账/展示。
+func applyMinimalRefundBillingOtherFields(quota int, other map[string]interface{}) {
+	if other == nil || quota <= 0 {
+		return
+	}
+	dppu := common.QuotaPerUnit
+	if dppu <= 0 {
+		dppu = 500000
+	}
+	other["discount_target_usd"] = fmt.Sprintf("%.6f", float64(quota)/dppu)
+	other["pre_user_discount_usd"] = quota
+	other["platform_discount_multiplier"] = float64(1)
+}
+
 func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	if params.LogType == LogTypeConsume && !common.LogConsumeEnabled {
 		return
 	}
 	username, _ := GetUsernameById(params.UserId, false)
+	logGroup := strings.TrimSpace(params.Group)
+	if logGroup == "" && params.UserId > 0 {
+		if u, err := GetUserById(params.UserId, false); err == nil && u != nil {
+			logGroup = strings.TrimSpace(u.Group)
+		}
+	}
+	if params.LogType == LogTypeRefund && params.Other != nil && params.Quota > 0 && refundOtherMissingDiscountTargetUSD(params.Other) {
+		if FillRefundTaskBillingOtherFunc != nil {
+			FillRefundTaskBillingOtherFunc(strings.TrimSpace(username), logGroup, strings.TrimSpace(params.ModelName), params.Quota, params.Other)
+		}
+		if refundOtherMissingDiscountTargetUSD(params.Other) {
+			applyMinimalRefundBillingOtherFields(params.Quota, params.Other)
+		}
+	}
+	// 最后一道兜底：避免上游只写了 task_id/reason 或 discount_target_usd 类型异常时仍跳过 enrich
+	if params.LogType == LogTypeRefund && params.Other != nil && params.Quota > 0 && refundOtherMissingDiscountTargetUSD(params.Other) {
+		applyMinimalRefundBillingOtherFields(params.Quota, params.Other)
+	}
 	tokenName := ""
 	if params.TokenId > 0 {
 		if token, err := GetTokenById(params.TokenId); err == nil {
@@ -233,7 +288,7 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 		Quota:     params.Quota,
 		ChannelId: params.ChannelId,
 		TokenId:   params.TokenId,
-		Group:     params.Group,
+		Group:     logGroup,
 		Other:     common.MapToJsonStr(params.Other),
 	}
 	err := LOG_DB.Create(log).Error
