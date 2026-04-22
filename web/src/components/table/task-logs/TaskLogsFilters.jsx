@@ -23,6 +23,34 @@ import { IconSearch } from '@douyinfe/semi-icons';
 
 import { DATE_RANGE_PRESETS } from '../../../constants/console.constants';
 
+/** 与 new-api model.Task 状态常量一致，value 与 DB 中 status 相同 */
+const taskStatusFilterValues = [
+  '',
+  'NOT_START',
+  'SUBMITTED',
+  'QUEUED',
+  'IN_PROGRESS',
+  'FAILURE',
+  'SUCCESS',
+  'UNKNOWN',
+];
+
+const taskStatusFilterLabelKey = (value) => {
+  if (!value) {
+    return '全部';
+  }
+  const map = {
+    NOT_START: '未开始',
+    SUBMITTED: '已提交',
+    QUEUED: '排队中',
+    IN_PROGRESS: '进行中',
+    FAILURE: '失败',
+    SUCCESS: '成功',
+    UNKNOWN: '未知',
+  };
+  return map[value] || value;
+};
+
 const TaskLogsFilters = ({
   formInitValues,
   setFormApi,
@@ -45,7 +73,9 @@ const TaskLogsFilters = ({
       stopValidateWithError={false}
     >
       <div className='flex flex-col gap-2'>
-        <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2'>
+        <div
+          className={`grid grid-cols-1 md:grid-cols-2 gap-2 ${isAdminUser ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}
+        >
           {/* 时间选择器 */}
           <div className='col-span-1 lg:col-span-2'>
             <Form.DatePicker
@@ -70,6 +100,19 @@ const TaskLogsFilters = ({
             prefix={<IconSearch />}
             placeholder={t('任务 ID')}
             showClear
+            pure
+            size='small'
+          />
+
+          <Form.Select
+            field='status'
+            placeholder={t('任务状态')}
+            optionList={taskStatusFilterValues.map((value) => ({
+              label: t(taskStatusFilterLabelKey(value)),
+              value,
+            }))}
+            showClear
+            filter
             pure
             size='small'
           />
