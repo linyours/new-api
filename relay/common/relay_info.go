@@ -115,6 +115,8 @@ type RelayInfo struct {
 	UserSetting            dto.UserSetting
 	UserEmail              string
 	UserQuota              int
+	AgentActualQuota       int  // 代理实际扣费额度：按平台给代理的折扣计算；仅影响代理结算/统计，不影响主用户
+	AgentActualQuotaReady  bool // AgentActualQuota 是否已解析；允许 0 作为合法值
 	RelayFormat            types.RelayFormat
 	SendResponseCount      int
 	ReceivedResponseCount  int

@@ -26,6 +26,7 @@ import (
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/samber/lo"
+	"github.com/shopspring/decimal"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -567,6 +568,7 @@ func RelayTask(c *gin.Context) {
 	if taskErr == nil {
 		preQ := result.Quota
 		billed, mult := service.MjPerCallQuotaAfterUserDiscount(c.GetString("username"), relayInfo.UsingGroup, relayInfo.OriginModelName, preQ)
+		service.ResolveAgentActualQuotaByPlatformDiscount(relayInfo, c.GetString("username"), decimal.NewFromInt(int64(preQ)), billed)
 		if settleErr := service.SettleBilling(c, relayInfo, billed); settleErr != nil {
 			common.SysError("settle task billing error: " + settleErr.Error())
 		}

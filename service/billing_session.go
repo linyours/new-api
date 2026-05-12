@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -26,6 +27,8 @@ type BillingSession struct {
 	relayInfo        *relaycommon.RelayInfo
 	funding          FundingSource
 	preConsumedQuota int  // 实际预扣额度（信任用户可能为 0）
+	agentUserId      int  // 关联代理用户（若存在），与主用户同口径进行余额预扣/结算/退回
+	agentPreConsumed int  // 代理侧实际预扣额度
 	tokenConsumed    int  // 令牌额度实际扣减量
 	fundingSettled   bool // funding.Settle 已成功，资金来源已提交
 	settled          bool // Settle 全部完成（资金 + 令牌）
@@ -43,12 +46,14 @@ func (s *BillingSession) Settle(actualQuota int) error {
 		return nil
 	}
 	delta := actualQuota - s.preConsumedQuota
-	if delta == 0 {
+	agentActualQuota := getAgentActualQuotaForSettle(s.relayInfo, actualQuota)
+	agentDelta := agentActualQuota - s.agentPreConsumed
+	if delta == 0 && agentDelta == 0 {
 		s.settled = true
 		return nil
 	}
 	// 1) 调整资金来源（仅在尚未提交时执行，防止重复调用）
-	if !s.fundingSettled {
+	if delta != 0 && !s.fundingSettled {
 		if err := s.funding.Settle(delta); err != nil {
 			return err
 		}
@@ -68,11 +73,26 @@ func (s *BillingSession) Settle(actualQuota int) error {
 				s.relayInfo.UserId, s.relayInfo.TokenId, delta, tokenErr.Error()))
 		}
 	}
+	var agentErr error
+	agentUserId := s.agentUserId
+	if agentUserId <= 0 {
+		agentUserId, _ = getAgentUserIDByUserID(s.relayInfo.UserId)
+		s.agentUserId = agentUserId
+	}
+	if agentUserId > 0 {
+		agentErr = settlePreConsumedQuotaToAgent(context.Background(), s.relayInfo.UserId, agentUserId, s.agentPreConsumed, agentActualQuota)
+	}
 	// 3) 更新 relayInfo 上的订阅 PostDelta（用于日志）
 	if s.funding.Source() == BillingSourceSubscription {
 		s.relayInfo.SubscriptionPostDelta += int64(delta)
 	}
 	s.settled = true
+	if tokenErr != nil {
+		return tokenErr
+	}
+	if agentErr != nil {
+		return agentErr
+	}
 	return tokenErr
 }
 
@@ -98,6 +118,9 @@ func (s *BillingSession) Refund(c *gin.Context) {
 	isPlayground := s.relayInfo.IsPlayground
 	tokenConsumed := s.tokenConsumed
 	funding := s.funding
+	agentUserId := s.agentUserId
+	agentPreConsumed := s.agentPreConsumed
+	sourceUserId := s.relayInfo.UserId
 
 	gopool.Go(func() {
 		// 1) 退还资金来源
@@ -109,6 +132,10 @@ func (s *BillingSession) Refund(c *gin.Context) {
 			if err := model.IncreaseTokenQuota(tokenId, tokenKey, tokenConsumed); err != nil {
 				common.SysLog("error refunding token quota: " + err.Error())
 			}
+		}
+		// 3) 退还代理预扣额度
+		if err := refundPreConsumedQuotaToAgent(context.Background(), sourceUserId, agentUserId, agentPreConsumed); err != nil {
+			common.SysLog("error refunding agent pre-consumed quota: " + err.Error())
 		}
 	})
 }
@@ -182,6 +209,25 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 		}
 		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 	}
+
+	// ---- 3) 预扣代理额度（若存在），失败时回滚主用户资金来源与令牌额度 ----
+	agentUserId, agentPreConsumed, agentErr := preConsumeQuotaToAgent(c, s.relayInfo.UserId, effectiveQuota)
+	if agentErr != nil {
+		if rollbackErr := s.funding.Refund(); rollbackErr != nil {
+			common.SysLog(fmt.Sprintf("error rolling back funding after agent pre-consume failed (userId=%d, amount=%d, agentErr=%s): %s",
+				s.relayInfo.UserId, effectiveQuota, agentErr.Error(), rollbackErr.Error()))
+		}
+		if s.tokenConsumed > 0 && !s.relayInfo.IsPlayground {
+			if rollbackErr := model.IncreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, s.tokenConsumed); rollbackErr != nil {
+				common.SysLog(fmt.Sprintf("error rolling back token quota after agent pre-consume failed (userId=%d, tokenId=%d, amount=%d, agentErr=%s): %s",
+					s.relayInfo.UserId, s.relayInfo.TokenId, s.tokenConsumed, agentErr.Error(), rollbackErr.Error()))
+			}
+			s.tokenConsumed = 0
+		}
+		return types.NewError(agentErr, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+	}
+	s.agentUserId = agentUserId
+	s.agentPreConsumed = agentPreConsumed
 
 	s.preConsumedQuota = effectiveQuota
 

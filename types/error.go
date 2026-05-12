@@ -83,8 +83,9 @@ const (
 	ErrorCodeUpdateDataError ErrorCode = "update_data_error"
 
 	// quota error
-	ErrorCodeInsufficientUserQuota      ErrorCode = "insufficient_user_quota"
-	ErrorCodePreConsumeTokenQuotaFailed ErrorCode = "pre_consume_token_quota_failed"
+	ErrorCodeInsufficientUserQuota       ErrorCode = "insufficient_user_quota"
+	ErrorCodePreConsumeTokenQuotaFailed  ErrorCode = "pre_consume_token_quota_failed"
+	ErrorCodeRouterAgentQuotaExceeded    ErrorCode = "router_agent_quota_exceeded" // 429, router_user AGENT 额度不足以覆盖预扣
 )
 
 type NewAPIError struct {

@@ -293,6 +293,7 @@ func PostClaudeConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, 
 	}
 
 	quota := int(calculateQuota)
+	ResolveAgentActualQuotaByPlatformDiscount(relayInfo, ctx.GetString("username"), decimal.NewFromFloat(calculateQuota), quota)
 
 	totalTokens := promptTokens + completionTokens
 
@@ -393,6 +394,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	}
 
 	quota := calculateAudioQuota(quotaInfo)
+	ResolveAgentActualQuotaByPlatformDiscount(relayInfo, ctx.GetString("username"), decimal.NewFromInt(int64(quota)), quota)
 
 	totalTokens := usage.TotalTokens
 	var logContent string

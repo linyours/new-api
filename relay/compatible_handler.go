@@ -413,6 +413,7 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 		relayInfo.OriginModelName,
 	)
 	quota := service.QuotaAfterUserDiscountMultiplier(preDiscountQuota, discountMultiplier)
+	service.ResolveAgentActualQuotaByPlatformDiscount(relayInfo, ctx.GetString("username"), preDiscountQuota, quota)
 	totalTokens := promptTokens + completionTokens
 
 	//var logContent string

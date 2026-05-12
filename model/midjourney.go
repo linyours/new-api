@@ -14,6 +14,7 @@ type Midjourney struct {
 	StartTime   int64  `json:"start_time" gorm:"index"`
 	FinishTime  int64  `json:"finish_time" gorm:"index"`
 	ImageUrl    string `json:"image_url"`
+	ImageUrls   string `json:"image_urls"`
 	VideoUrl    string `json:"video_url"`
 	VideoUrls   string `json:"video_urls"`
 	Status      string `json:"status" gorm:"type:varchar(20);index"`
