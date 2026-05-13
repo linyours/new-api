@@ -100,6 +100,8 @@ func getImageToken(c *gin.Context, fileMeta *types.FileMeta, model string, strea
 	if err != nil {
 		return 0, err
 	}
+	fileMeta.MimeType = format
+
 	if config.Width == 0 || config.Height == 0 {
 		// not an image, but might be a valid file
 		if format != "" {
@@ -266,6 +268,7 @@ func EstimateRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *rela
 				}
 				continue
 			}
+			file.MimeType = cachedData.MimeType
 			file.FileType = DetectFileType(cachedData.MimeType)
 		}
 	}

@@ -166,18 +166,8 @@ func GetChannelAffinityCacheStats() ChannelAffinityCacheStats {
 			unknown++
 			continue
 		}
-		if rule.IncludeModelName {
-			if len(parts) < 3 {
-				unknown++
-				continue
-			}
-		}
 		if rule.IncludeUsingGroup {
-			minParts := 3
-			if rule.IncludeModelName {
-				minParts = 4
-			}
-			if len(parts) < minParts {
+			if len(parts) < 3 {
 				unknown++
 				continue
 			}
@@ -329,13 +319,10 @@ func extractChannelAffinityValue(c *gin.Context, src operation_setting.ChannelAf
 	}
 }
 
-func buildChannelAffinityCacheKeySuffix(rule operation_setting.ChannelAffinityRule, modelName string, usingGroup string, affinityValue string) string {
-	parts := make([]string, 0, 4)
+func buildChannelAffinityCacheKeySuffix(rule operation_setting.ChannelAffinityRule, usingGroup string, affinityValue string) string {
+	parts := make([]string, 0, 3)
 	if rule.IncludeRuleName && rule.Name != "" {
 		parts = append(parts, rule.Name)
-	}
-	if rule.IncludeModelName && modelName != "" {
-		parts = append(parts, modelName)
 	}
 	if rule.IncludeUsingGroup && usingGroup != "" {
 		parts = append(parts, usingGroup)
@@ -586,7 +573,7 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 		if ttlSeconds <= 0 {
 			ttlSeconds = setting.DefaultTTLSeconds
 		}
-		cacheKeySuffix := buildChannelAffinityCacheKeySuffix(rule, modelName, usingGroup, affinityValue)
+		cacheKeySuffix := buildChannelAffinityCacheKeySuffix(rule, usingGroup, affinityValue)
 		cacheKeyFull := channelAffinityCacheNamespace + ":" + cacheKeySuffix
 		setChannelAffinityContext(c, channelAffinityMeta{
 			CacheKey:       cacheKeyFull,
@@ -623,17 +610,14 @@ func ShouldSkipRetryAfterChannelAffinityFailure(c *gin.Context) bool {
 		return false
 	}
 	v, ok := c.Get(ginKeyChannelAffinitySkipRetry)
-	if ok {
-		b, ok := v.(bool)
-		if ok {
-			return b
-		}
-	}
-	meta, ok := getChannelAffinityMeta(c)
 	if !ok {
 		return false
 	}
-	return meta.SkipRetry
+	b, ok := v.(bool)
+	if !ok {
+		return false
+	}
+	return b
 }
 
 func MarkChannelAffinityUsed(c *gin.Context, selectedGroup string, channelID int) {

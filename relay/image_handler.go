@@ -117,22 +117,11 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 	if request.N != nil {
 		imageN = *request.N
 	}
-
-	// n is handled via OtherRatio so it is applied exactly once in quota
-	// calculation (both price-based and ratio-based paths).
-	// Adaptors may have already set a more accurate count from the
-	// upstream response; only set the default when they haven't.
-	if info.PriceData.UsePrice { // only price model use N ratio
-		if _, hasN := info.PriceData.OtherRatios["n"]; !hasN {
-			info.PriceData.AddOtherRatio("n", float64(imageN))
-		}
-	}
-
 	if usage.(*dto.Usage).TotalTokens == 0 {
-		usage.(*dto.Usage).TotalTokens = 1
+		usage.(*dto.Usage).TotalTokens = int(imageN)
 	}
 	if usage.(*dto.Usage).PromptTokens == 0 {
-		usage.(*dto.Usage).PromptTokens = 1
+		usage.(*dto.Usage).PromptTokens = int(imageN)
 	}
 
 	quality := "standard"
@@ -152,6 +141,6 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		logContent = append(logContent, fmt.Sprintf("生成数量 %d", imageN))
 	}
 
-	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), logContent)
+	postConsumeQuota(c, info, usage.(*dto.Usage), logContent...)
 	return nil
 }

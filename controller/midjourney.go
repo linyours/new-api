@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -180,19 +181,36 @@ func UpdateMidjourneyTaskBulk() {
 					err = model.IncreaseUserQuota(task.UserId, task.Quota, false)
 					if err != nil {
 						logger.LogError(ctx, "fail to increase user quota: "+err.Error())
-					}
-					model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
-						UserId:    task.UserId,
-						LogType:   model.LogTypeRefund,
-						Content:   "",
-						ChannelId: task.ChannelId,
-						ModelName: service.CovertMjpActionToModelName(task.Action),
-						Quota:     task.Quota,
-						Other: map[string]interface{}{
+					} else {
+						reason := strings.TrimSpace(task.FailReason)
+						if reason == "" {
+							reason = "构图失败"
+						}
+						modelName := service.CovertMjpActionToModelName(task.Action)
+						group := ""
+						username := ""
+						if u, uerr := model.GetUserById(task.UserId, false); uerr == nil && u != nil {
+							group = strings.TrimSpace(u.Group)
+							username = strings.TrimSpace(u.Username)
+						}
+						service.RefundMjAgentMirrorForMidjourneyTask(context.Background(), task.UserId, username, group, modelName, task.Quota)
+						other := map[string]interface{}{
 							"task_id": task.MjId,
-							"reason":  "构图失败",
-						},
-					})
+							"reason":  reason,
+						}
+						mult := service.GetUserDiscountMultiplier(username, group, modelName)
+						service.EnrichOtherWithPostDiscountQuotaUSD(username, group, modelName, task.Quota, mult, other)
+						model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
+							UserId:    task.UserId,
+							LogType:   model.LogTypeRefund,
+							Content:   "",
+							ChannelId: task.ChannelId,
+							ModelName: modelName,
+							Quota:     task.Quota,
+							Group:     group,
+							Other:     other,
+						})
+					}
 				}
 			}
 		}

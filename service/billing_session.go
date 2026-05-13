@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -26,9 +27,9 @@ type BillingSession struct {
 	relayInfo        *relaycommon.RelayInfo
 	funding          FundingSource
 	preConsumedQuota int  // 实际预扣额度（信任用户可能为 0）
+	agentUserId      int  // 关联代理用户（若存在），与主用户同口径进行余额预扣/结算/退回
+	agentPreConsumed int  // 代理侧实际预扣额度
 	tokenConsumed    int  // 令牌额度实际扣减量
-	extraReserved    int  // 发送前补充预扣的额度（订阅退款时需要单独回滚）
-	trusted          bool // 是否命中信任额度旁路
 	fundingSettled   bool // funding.Settle 已成功，资金来源已提交
 	settled          bool // Settle 全部完成（资金 + 令牌）
 	refunded         bool // Refund 已调用
@@ -45,12 +46,14 @@ func (s *BillingSession) Settle(actualQuota int) error {
 		return nil
 	}
 	delta := actualQuota - s.preConsumedQuota
-	if delta == 0 {
+	agentActualQuota := getAgentActualQuotaForSettle(s.relayInfo, actualQuota)
+	agentDelta := agentActualQuota - s.agentPreConsumed
+	if delta == 0 && agentDelta == 0 {
 		s.settled = true
 		return nil
 	}
 	// 1) 调整资金来源（仅在尚未提交时执行，防止重复调用）
-	if !s.fundingSettled {
+	if delta != 0 && !s.fundingSettled {
 		if err := s.funding.Settle(delta); err != nil {
 			return err
 		}
@@ -70,11 +73,26 @@ func (s *BillingSession) Settle(actualQuota int) error {
 				s.relayInfo.UserId, s.relayInfo.TokenId, delta, tokenErr.Error()))
 		}
 	}
+	var agentErr error
+	agentUserId := s.agentUserId
+	if agentUserId <= 0 {
+		agentUserId, _ = getAgentUserIDByUserID(s.relayInfo.UserId)
+		s.agentUserId = agentUserId
+	}
+	if agentUserId > 0 {
+		agentErr = settlePreConsumedQuotaToAgent(context.Background(), s.relayInfo.UserId, agentUserId, s.agentPreConsumed, agentActualQuota)
+	}
 	// 3) 更新 relayInfo 上的订阅 PostDelta（用于日志）
 	if s.funding.Source() == BillingSourceSubscription {
 		s.relayInfo.SubscriptionPostDelta += int64(delta)
 	}
 	s.settled = true
+	if tokenErr != nil {
+		return tokenErr
+	}
+	if agentErr != nil {
+		return agentErr
+	}
 	return tokenErr
 }
 
@@ -99,25 +117,25 @@ func (s *BillingSession) Refund(c *gin.Context) {
 	tokenKey := s.relayInfo.TokenKey
 	isPlayground := s.relayInfo.IsPlayground
 	tokenConsumed := s.tokenConsumed
-	extraReserved := s.extraReserved
-	subscriptionId := s.relayInfo.SubscriptionId
 	funding := s.funding
+	agentUserId := s.agentUserId
+	agentPreConsumed := s.agentPreConsumed
+	sourceUserId := s.relayInfo.UserId
 
 	gopool.Go(func() {
 		// 1) 退还资金来源
 		if err := funding.Refund(); err != nil {
 			common.SysLog("error refunding billing source: " + err.Error())
 		}
-		if extraReserved > 0 && funding.Source() == BillingSourceSubscription && subscriptionId > 0 {
-			if err := model.PostConsumeUserSubscriptionDelta(subscriptionId, -int64(extraReserved)); err != nil {
-				common.SysLog("error refunding subscription extra reserved quota: " + err.Error())
-			}
-		}
 		// 2) 退还令牌额度
 		if tokenConsumed > 0 && !isPlayground {
 			if err := model.IncreaseTokenQuota(tokenId, tokenKey, tokenConsumed); err != nil {
 				common.SysLog("error refunding token quota: " + err.Error())
 			}
+		}
+		// 3) 退还代理预扣额度
+		if err := refundPreConsumedQuotaToAgent(context.Background(), sourceUserId, agentUserId, agentPreConsumed); err != nil {
+			common.SysLog("error refunding agent pre-consumed quota: " + err.Error())
 		}
 	})
 }
@@ -149,34 +167,6 @@ func (s *BillingSession) GetPreConsumedQuota() int {
 	return s.preConsumedQuota
 }
 
-func (s *BillingSession) Reserve(targetQuota int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.settled || s.refunded || s.trusted || targetQuota <= s.preConsumedQuota {
-		return nil
-	}
-
-	delta := targetQuota - s.preConsumedQuota
-	if delta <= 0 {
-		return nil
-	}
-
-	if err := s.reserveFunding(delta); err != nil {
-		return err
-	}
-	if err := s.reserveToken(delta); err != nil {
-		s.rollbackFundingReserve(delta)
-		return err
-	}
-
-	s.preConsumedQuota += delta
-	s.tokenConsumed += delta
-	s.extraReserved += delta
-	s.syncRelayInfo()
-	return nil
-}
-
 // ---------------------------------------------------------------------------
 // PreConsume — 统一预扣费入口（含信任额度旁路）
 // ---------------------------------------------------------------------------
@@ -188,7 +178,6 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 
 	// ---- 信任额度旁路 ----
 	if s.shouldTrust(c) {
-		s.trusted = true
 		effectiveQuota = 0
 		logger.LogInfo(c, fmt.Sprintf("用户 %d 额度充足, 信任且不需要预扣费 (funding=%s)", s.relayInfo.UserId, s.funding.Source()))
 	} else if effectiveQuota > 0 {
@@ -221,60 +210,30 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 	}
 
+	// ---- 3) 预扣代理额度（若存在），失败时回滚主用户资金来源与令牌额度 ----
+	agentUserId, agentPreConsumed, agentErr := preConsumeQuotaToAgent(c, s.relayInfo.UserId, effectiveQuota)
+	if agentErr != nil {
+		if rollbackErr := s.funding.Refund(); rollbackErr != nil {
+			common.SysLog(fmt.Sprintf("error rolling back funding after agent pre-consume failed (userId=%d, amount=%d, agentErr=%s): %s",
+				s.relayInfo.UserId, effectiveQuota, agentErr.Error(), rollbackErr.Error()))
+		}
+		if s.tokenConsumed > 0 && !s.relayInfo.IsPlayground {
+			if rollbackErr := model.IncreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, s.tokenConsumed); rollbackErr != nil {
+				common.SysLog(fmt.Sprintf("error rolling back token quota after agent pre-consume failed (userId=%d, tokenId=%d, amount=%d, agentErr=%s): %s",
+					s.relayInfo.UserId, s.relayInfo.TokenId, s.tokenConsumed, agentErr.Error(), rollbackErr.Error()))
+			}
+			s.tokenConsumed = 0
+		}
+		return types.NewError(agentErr, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+	}
+	s.agentUserId = agentUserId
+	s.agentPreConsumed = agentPreConsumed
+
 	s.preConsumedQuota = effectiveQuota
 
 	// ---- 同步 RelayInfo 兼容字段 ----
 	s.syncRelayInfo()
 
-	return nil
-}
-
-func (s *BillingSession) reserveFunding(delta int) error {
-	switch funding := s.funding.(type) {
-	case *WalletFunding:
-		if err := model.DecreaseUserQuota(funding.userId, delta, false); err != nil {
-			return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
-		}
-		funding.consumed += delta
-		return nil
-	case *SubscriptionFunding:
-		if err := model.PostConsumeUserSubscriptionDelta(funding.subscriptionId, int64(delta)); err != nil {
-			return types.NewErrorWithStatusCode(
-				fmt.Errorf("订阅额度不足或未配置订阅: %s", err.Error()),
-				types.ErrorCodeInsufficientUserQuota,
-				http.StatusForbidden,
-				types.ErrOptionWithSkipRetry(),
-				types.ErrOptionWithNoRecordErrorLog(),
-			)
-		}
-		return nil
-	default:
-		return types.NewError(fmt.Errorf("unsupported funding source: %s", s.funding.Source()), types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
-	}
-}
-
-func (s *BillingSession) rollbackFundingReserve(delta int) {
-	switch funding := s.funding.(type) {
-	case *WalletFunding:
-		if err := model.IncreaseUserQuota(funding.userId, delta, false); err != nil {
-			common.SysLog("error rolling back wallet funding reserve: " + err.Error())
-		} else {
-			funding.consumed -= delta
-		}
-	case *SubscriptionFunding:
-		if err := model.PostConsumeUserSubscriptionDelta(funding.subscriptionId, -int64(delta)); err != nil {
-			common.SysLog("error rolling back subscription funding reserve: " + err.Error())
-		}
-	}
-}
-
-func (s *BillingSession) reserveToken(delta int) error {
-	if delta <= 0 || s.relayInfo.IsPlayground {
-		return nil
-	}
-	if err := PreConsumeTokenQuota(s.relayInfo, delta); err != nil {
-		return types.NewErrorWithStatusCode(err, types.ErrorCodePreConsumeTokenQuotaFailed, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
-	}
 	return nil
 }
 
@@ -322,10 +281,10 @@ func (s *BillingSession) syncRelayInfo() {
 
 	if sub, ok := s.funding.(*SubscriptionFunding); ok {
 		info.SubscriptionId = sub.subscriptionId
-		info.SubscriptionPreConsumed = sub.preConsumed + int64(s.extraReserved)
+		info.SubscriptionPreConsumed = sub.preConsumed
 		info.SubscriptionPostDelta = 0
 		info.SubscriptionAmountTotal = sub.AmountTotal
-		info.SubscriptionAmountUsedAfterPreConsume = sub.AmountUsedAfter + int64(s.extraReserved)
+		info.SubscriptionAmountUsedAfterPreConsume = sub.AmountUsedAfter
 		info.SubscriptionPlanId = sub.PlanId
 		info.SubscriptionPlanTitle = sub.PlanTitle
 	} else {

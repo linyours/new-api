@@ -46,7 +46,6 @@ func (r *GeminiChatRequest) UnmarshalJSON(data []byte) error {
 type ToolConfig struct {
 	FunctionCallingConfig *FunctionCallingConfig `json:"functionCallingConfig,omitempty"`
 	RetrievalConfig       *RetrievalConfig       `json:"retrievalConfig,omitempty"`
-	IncludeServerSideToolInvocations *bool       `json:"includeServerSideToolInvocations,omitempty"`
 }
 
 type FunctionCallingConfig struct {
@@ -65,6 +64,14 @@ type LatLng struct {
 	Longitude *float64 `json:"longitude,omitempty"`
 }
 
+// createGeminiFileSource 根据数据内容创建正确类型的 FileSource
+func createGeminiFileSource(data string, mimeType string) *types.FileSource {
+	if strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://") {
+		return types.NewURLFileSource(data)
+	}
+	return types.NewBase64FileSource(data, mimeType)
+}
+
 func (r *GeminiChatRequest) GetTokenCountMeta() *types.TokenCountMeta {
 	var files []*types.FileMeta = make([]*types.FileMeta, 0)
 
@@ -80,8 +87,9 @@ func (r *GeminiChatRequest) GetTokenCountMeta() *types.TokenCountMeta {
 			if part.Text != "" {
 				inputTexts = append(inputTexts, part.Text)
 			}
-			if source := part.InlineData.ToFileSource(); source != nil {
+			if part.InlineData != nil && part.InlineData.Data != "" {
 				mimeType := part.InlineData.MimeType
+				source := createGeminiFileSource(part.InlineData.Data, mimeType)
 				var fileType types.FileType
 				if strings.HasPrefix(mimeType, "image/") {
 					fileType = types.FileTypeImage
@@ -95,6 +103,7 @@ func (r *GeminiChatRequest) GetTokenCountMeta() *types.TokenCountMeta {
 				files = append(files, &types.FileMeta{
 					FileType: fileType,
 					Source:   source,
+					MimeType: mimeType,
 				})
 			}
 		}
@@ -110,11 +119,6 @@ func (r *GeminiChatRequest) GetTokenCountMeta() *types.TokenCountMeta {
 
 func (r *GeminiChatRequest) IsStream(c *gin.Context) bool {
 	if c.Query("alt") == "sse" {
-		return true
-	}
-	// Native Gemini API uses URL action to indicate streaming:
-	// /v1beta/models/{model}:streamGenerateContent
-	if strings.Contains(c.Request.URL.Path, "streamGenerateContent") {
 		return true
 	}
 	return false
@@ -204,13 +208,6 @@ func (c *GeminiThinkingConfig) SetThinkingBudget(budget int) {
 type GeminiInlineData struct {
 	MimeType string `json:"mimeType"`
 	Data     string `json:"data"`
-}
-
-func (d *GeminiInlineData) ToFileSource() types.FileSource {
-	if d == nil || d.Data == "" {
-		return nil
-	}
-	return types.NewFileSourceFromData(d.Data, d.MimeType)
 }
 
 // UnmarshalJSON custom unmarshaler for GeminiInlineData to support snake_case and camelCase for MimeType
@@ -469,7 +466,6 @@ type GeminiUsageMetadata struct {
 	CachedContentTokenCount    int                         `json:"cachedContentTokenCount"`
 	PromptTokensDetails        []GeminiPromptTokensDetails `json:"promptTokensDetails"`
 	ToolUsePromptTokensDetails []GeminiPromptTokensDetails `json:"toolUsePromptTokensDetails"`
-	CandidatesTokensDetails    []GeminiPromptTokensDetails `json:"candidatesTokensDetails"`
 }
 
 type GeminiPromptTokensDetails struct {

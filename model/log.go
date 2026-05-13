@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -35,9 +36,8 @@ type Log struct {
 	TokenId          int    `json:"token_id" gorm:"default:0;index"`
 	Group            string `json:"group" gorm:"index"`
 	Ip               string `json:"ip" gorm:"index;default:''"`
-	RequestId         string `json:"request_id,omitempty" gorm:"type:varchar(64);index:idx_logs_request_id;default:''"`
-	UpstreamRequestId string `json:"upstream_request_id,omitempty" gorm:"type:varchar(128);index:idx_logs_upstream_request_id;default:''"`
-	Other             string `json:"other"`
+	RequestId        string `json:"request_id,omitempty" gorm:"type:varchar(64);index:idx_logs_request_id;default:''"`
+	Other            string `json:"other"`
 }
 
 // don't use iota, avoid change log type value
@@ -59,8 +59,7 @@ func formatUserLogs(logs []*Log, startIdx int) {
 		if otherMap != nil {
 			// Remove admin-only debug fields.
 			delete(otherMap, "admin_info")
-			// delete(otherMap, "reject_reason")
-			delete(otherMap, "stream_status")
+			delete(otherMap, "reject_reason")
 		}
 		logs[i].Other = common.MapToJsonStr(otherMap)
 		logs[i].Id = startIdx + i + 1
@@ -91,64 +90,11 @@ func RecordLog(userId int, logType int, content string) {
 	}
 }
 
-// RecordLogWithAdminInfo 记录操作日志，并将管理员相关信息存入 Other.admin_info，
-func RecordLogWithAdminInfo(userId int, logType int, content string, adminInfo map[string]interface{}) {
-	if logType == LogTypeConsume && !common.LogConsumeEnabled {
-		return
-	}
-	username, _ := GetUsernameById(userId, false)
-	log := &Log{
-		UserId:    userId,
-		Username:  username,
-		CreatedAt: common.GetTimestamp(),
-		Type:      logType,
-		Content:   content,
-	}
-	if len(adminInfo) > 0 {
-		other := map[string]interface{}{
-			"admin_info": adminInfo,
-		}
-		log.Other = common.MapToJsonStr(other)
-	}
-	if err := LOG_DB.Create(log).Error; err != nil {
-		common.SysLog("failed to record log: " + err.Error())
-	}
-}
-
-func RecordTopupLog(userId int, content string, callerIp string, paymentMethod string, callbackPaymentMethod string) {
-	username, _ := GetUsernameById(userId, false)
-	adminInfo := map[string]interface{}{
-		"server_ip":               common.GetIp(),
-		"node_name":               common.NodeName,
-		"caller_ip":               callerIp,
-		"payment_method":          paymentMethod,
-		"callback_payment_method": callbackPaymentMethod,
-		"version":                 common.Version,
-	}
-	other := map[string]interface{}{
-		"admin_info": adminInfo,
-	}
-	log := &Log{
-		UserId:    userId,
-		Username:  username,
-		CreatedAt: common.GetTimestamp(),
-		Type:      LogTypeTopup,
-		Content:   content,
-		Ip:        callerIp,
-		Other:     common.MapToJsonStr(other),
-	}
-	err := LOG_DB.Create(log).Error
-	if err != nil {
-		common.SysLog("failed to record topup log: " + err.Error())
-	}
-}
-
 func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string, tokenName string, content string, tokenId int, useTimeSeconds int,
 	isStream bool, group string, other map[string]interface{}) {
 	logger.LogInfo(c, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, content))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
-	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	otherStr := common.MapToJsonStr(other)
 	// 判断是否需要记录 IP
 	needRecordIp := false
@@ -179,9 +125,8 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 			}
 			return ""
 		}(),
-		RequestId:         requestId,
-		UpstreamRequestId: upstreamRequestId,
-		Other:             otherStr,
+		RequestId: requestId,
+		Other:     otherStr,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {
@@ -211,7 +156,6 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
-	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	otherStr := common.MapToJsonStr(params.Other)
 	// 判断是否需要记录 IP
 	needRecordIp := false
@@ -242,9 +186,8 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 			}
 			return ""
 		}(),
-		RequestId:         requestId,
-		UpstreamRequestId: upstreamRequestId,
-		Other:             otherStr,
+		RequestId: requestId,
+		Other:     otherStr,
 	}
 	err := LOG_DB.Create(log).Error
 	if err != nil {
@@ -269,11 +212,65 @@ type RecordTaskBillingLogParams struct {
 	Other     map[string]interface{}
 }
 
+// FillRefundTaskBillingOtherFunc 由 service.init 或 main 注入，在退费日志落库前补齐 discount_* / group_ratio 等字段；
+// 避免 model 包直接依赖 service 产生循环引用。若 other 已含有效 discount_target_usd 则跳过（兼容已 enrich 的调用方）。
+var FillRefundTaskBillingOtherFunc func(username string, group string, modelName string, quota int, other map[string]interface{})
+
+// refundOtherMissingDiscountTargetUSD 为 true 时表示需要在落库前补全折扣字段。
+// 注意：仅当 discount_target_usd 为非空字符串时才视为已落表；若为 float64/json.Number 等（历史或异常数据），
+// 旧实现会误判为「已存在」从而跳过整个 enrich，导致 other 只有 task_id/reason。
+func refundOtherMissingDiscountTargetUSD(other map[string]interface{}) bool {
+	if other == nil {
+		return false
+	}
+	v, ok := other["discount_target_usd"]
+	if !ok || v == nil {
+		return true
+	}
+	s, isStr := v.(string)
+	if !isStr {
+		return true
+	}
+	return strings.TrimSpace(s) == ""
+}
+
+// applyMinimalRefundBillingOtherFields 无 service 回调时的兜底（等价于用户折扣乘子=1），保证字段非空便于对账/展示。
+func applyMinimalRefundBillingOtherFields(quota int, other map[string]interface{}) {
+	if other == nil || quota <= 0 {
+		return
+	}
+	dppu := common.QuotaPerUnit
+	if dppu <= 0 {
+		dppu = 500000
+	}
+	other["discount_target_usd"] = fmt.Sprintf("%.6f", float64(quota)/dppu)
+	other["pre_user_discount_usd"] = quota
+	other["platform_discount_multiplier"] = float64(1)
+}
+
 func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	if params.LogType == LogTypeConsume && !common.LogConsumeEnabled {
 		return
 	}
 	username, _ := GetUsernameById(params.UserId, false)
+	logGroup := strings.TrimSpace(params.Group)
+	if logGroup == "" && params.UserId > 0 {
+		if u, err := GetUserById(params.UserId, false); err == nil && u != nil {
+			logGroup = strings.TrimSpace(u.Group)
+		}
+	}
+	if params.LogType == LogTypeRefund && params.Other != nil && params.Quota > 0 && refundOtherMissingDiscountTargetUSD(params.Other) {
+		if FillRefundTaskBillingOtherFunc != nil {
+			FillRefundTaskBillingOtherFunc(strings.TrimSpace(username), logGroup, strings.TrimSpace(params.ModelName), params.Quota, params.Other)
+		}
+		if refundOtherMissingDiscountTargetUSD(params.Other) {
+			applyMinimalRefundBillingOtherFields(params.Quota, params.Other)
+		}
+	}
+	// 最后一道兜底：避免上游只写了 task_id/reason 或 discount_target_usd 类型异常时仍跳过 enrich
+	if params.LogType == LogTypeRefund && params.Other != nil && params.Quota > 0 && refundOtherMissingDiscountTargetUSD(params.Other) {
+		applyMinimalRefundBillingOtherFields(params.Quota, params.Other)
+	}
 	tokenName := ""
 	if params.TokenId > 0 {
 		if token, err := GetTokenById(params.TokenId); err == nil {
@@ -291,7 +288,7 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 		Quota:     params.Quota,
 		ChannelId: params.ChannelId,
 		TokenId:   params.TokenId,
-		Group:     params.Group,
+		Group:     logGroup,
 		Other:     common.MapToJsonStr(params.Other),
 	}
 	err := LOG_DB.Create(log).Error
@@ -300,7 +297,7 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	}
 }
 
-func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
+func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
 		tx = LOG_DB
@@ -319,9 +316,6 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 	}
 	if requestId != "" {
 		tx = tx.Where("logs.request_id = ?", requestId)
-	}
-	if upstreamRequestId != "" {
-		tx = tx.Where("logs.upstream_request_id = ?", upstreamRequestId)
 	}
 	if startTimestamp != 0 {
 		tx = tx.Where("logs.created_at >= ?", startTimestamp)
@@ -389,7 +383,7 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 
 const logSearchCountLimit = 10000
 
-func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
+func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, requestId string) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
 		tx = LOG_DB.Where("logs.user_id = ?", userId)
@@ -409,9 +403,6 @@ func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int
 	}
 	if requestId != "" {
 		tx = tx.Where("logs.request_id = ?", requestId)
-	}
-	if upstreamRequestId != "" {
-		tx = tx.Where("logs.upstream_request_id = ?", upstreamRequestId)
 	}
 	if startTimestamp != 0 {
 		tx = tx.Where("logs.created_at >= ?", startTimestamp)

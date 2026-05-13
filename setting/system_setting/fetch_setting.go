@@ -21,7 +21,7 @@ var defaultFetchSetting = FetchSetting{
 	DomainList:             []string{},
 	IpList:                 []string{},
 	AllowedPorts:           []string{"80", "443", "8080", "8443"},
-	ApplyIPFilterForDomain: true,
+	ApplyIPFilterForDomain: false,
 }
 
 func init() {

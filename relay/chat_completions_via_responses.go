@@ -2,7 +2,6 @@ package relay
 
 import (
 	"bytes"
-	"io"
 	"net/http"
 	"strings"
 
@@ -125,10 +124,8 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
 
-	var requestBody io.Reader = bytes.NewBuffer(jsonData)
-
 	var httpResp *http.Response
-	resp, err := adaptor.DoRequest(c, info, requestBody)
+	resp, err := adaptor.DoRequest(c, info, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
 	}

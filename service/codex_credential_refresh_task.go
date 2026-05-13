@@ -28,10 +28,6 @@ var (
 	codexCredentialRefreshRunning atomic.Bool
 )
 
-func shouldAutoRefreshCodexChannelStatus(status int) bool {
-	return status == common.ChannelStatusEnabled || status == common.ChannelStatusAutoDisabled
-}
-
 func StartCodexCredentialAutoRefreshTask() {
 	codexCredentialRefreshOnce.Do(func() {
 		if !common.IsMasterNode {
@@ -69,11 +65,7 @@ func runCodexCredentialAutoRefreshOnce() {
 		var channels []*model.Channel
 		err := model.DB.
 			Select("id", "name", "key", "status", "channel_info").
-			Where("type = ? AND (status = ? OR status = ?)",
-				constant.ChannelTypeCodex,
-				common.ChannelStatusEnabled,
-				common.ChannelStatusAutoDisabled,
-			).
+			Where("type = ? AND status = 1", constant.ChannelTypeCodex).
 			Order("id asc").
 			Limit(codexCredentialRefreshBatchSize).
 			Offset(offset).

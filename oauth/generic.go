@@ -208,7 +208,10 @@ func (p *GenericOAuthProvider) GetUserInfo(ctx context.Context, token *OAuthToke
 	}
 
 	// Set authorization header
-	tokenType := normalizeAuthorizationTokenType(token.TokenType)
+	tokenType := token.TokenType
+	if tokenType == "" {
+		tokenType = "Bearer"
+	}
 	req.Header.Set("Authorization", fmt.Sprintf("%s %s", tokenType, token.AccessToken))
 	req.Header.Set("Accept", "application/json")
 
@@ -315,14 +318,6 @@ func (p *GenericOAuthProvider) GetProviderPrefix() string {
 // GetProviderId returns the provider ID for binding purposes
 func (p *GenericOAuthProvider) GetProviderId() int {
 	return p.config.Id
-}
-
-func normalizeAuthorizationTokenType(tokenType string) string {
-	tokenType = strings.TrimSpace(tokenType)
-	if tokenType == "" || strings.EqualFold(tokenType, "Bearer") {
-		return "Bearer"
-	}
-	return tokenType
 }
 
 // IsGenericProvider returns true for generic providers
