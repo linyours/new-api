@@ -56,6 +56,10 @@ const (
 
 	ContextKeySystemPromptOverride ContextKey = "system_prompt_override"
 
+	// Claude empty text block patch + retry (per request).
+	ContextKeyClaudeEmptyTextPatched ContextKey = "claude_empty_text_patched"
+	ContextKeyClaudeEmptyTextRetried ContextKey = "claude_empty_text_retried"
+
 	// ContextKeyFileSourcesToCleanup stores file sources that need cleanup when request ends
 	ContextKeyFileSourcesToCleanup ContextKey = "file_sources_to_cleanup"
 

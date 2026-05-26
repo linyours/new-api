@@ -95,6 +95,29 @@ func GetBodyStorage(c *gin.Context) (BodyStorage, error) {
 	return bs, nil
 }
 
+// ReplaceBodyStorage swaps cached request body for a new payload.
+// Safe for per-request use: each gin.Context owns its own BodyStorage instance.
+func ReplaceBodyStorage(c *gin.Context, data []byte) error {
+	if storage, exists := c.Get(KeyBodyStorage); exists && storage != nil {
+		if bs, ok := storage.(BodyStorage); ok {
+			_ = bs.Close()
+		}
+	}
+
+	storage, err := CreateBodyStorage(data)
+	if err != nil {
+		return err
+	}
+	c.Set(KeyBodyStorage, storage)
+	if _, err := storage.Seek(0, io.SeekStart); err != nil {
+		_ = storage.Close()
+		c.Set(KeyBodyStorage, nil)
+		return fmt.Errorf("failed to seek body storage: %w", err)
+	}
+	c.Request.Body = io.NopCloser(storage)
+	return nil
+}
+
 // CleanupBodyStorage 清理请求体存储（应在请求结束时调用）
 func CleanupBodyStorage(c *gin.Context) {
 	if storage, exists := c.Get(KeyBodyStorage); exists && storage != nil {

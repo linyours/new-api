@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay"
+	"github.com/QuantumNous/new-api/relay/channel/claude"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -230,6 +231,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
+		tryPatchClaudeEmptyTextBlocksForRetry(c, relayFormat, relayInfo, newAPIError)
+
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
@@ -316,9 +319,37 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	return channel, nil
 }
 
+func tryPatchClaudeEmptyTextBlocksForRetry(c *gin.Context, relayFormat types.RelayFormat, relayInfo *relaycommon.RelayInfo, apiErr *types.NewAPIError) {
+	if relayFormat != types.RelayFormatClaude || apiErr == nil || common.RetryTimes <= 0 {
+		return
+	}
+	if !claude.IsEmptyTextBlockError(apiErr) {
+		return
+	}
+	if common.GetContextKeyBool(c, constant.ContextKeyClaudeEmptyTextPatched) {
+		return
+	}
+
+	claudeReq, ok := relayInfo.Request.(*dto.ClaudeRequest)
+	if !ok || claudeReq == nil {
+		return
+	}
+	if !claude.ApplyEmptyTextBlockPatch(claudeReq) {
+		return
+	}
+
+	common.SetContextKey(c, constant.ContextKeyClaudeEmptyTextPatched, true)
+	if err := claude.SyncClaudeRequestBodyStorage(c, claudeReq); err != nil {
+		logger.LogError(c, "failed to sync claude request body after empty text patch: "+err.Error())
+	}
+}
+
 func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
 	if openaiErr == nil {
 		return false
+	}
+	if claude.ShouldRetryAfterEmptyTextBlockPatch(c, openaiErr, retryTimes) {
+		return true
 	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return false
