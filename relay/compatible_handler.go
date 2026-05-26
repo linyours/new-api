@@ -513,18 +513,23 @@ func postConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage 
 		other["image_generation_call"] = true
 		other["image_generation_call_price"] = imageGenerationCallPrice
 	}
+	cacheCreationForLog := 0
+	if isClaudeUsageSemantic {
+		cacheCreationForLog = cachedCreationTokens
+	}
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
-		ChannelId:        relayInfo.ChannelId,
-		PromptTokens:     promptTokens,
-		CompletionTokens: completionTokens,
-		ModelName:        logModel,
-		TokenName:        tokenName,
-		Quota:            quota,
-		Content:          logContent,
-		TokenId:          relayInfo.TokenId,
-		UseTimeSeconds:   int(useTimeSeconds),
-		IsStream:         relayInfo.IsStream,
-		Group:            relayInfo.UsingGroup,
-		Other:            other,
+		ChannelId:           relayInfo.ChannelId,
+		PromptTokens:        promptTokens,
+		CacheCreationTokens: cacheCreationForLog,
+		CompletionTokens:    completionTokens,
+		ModelName:           logModel,
+		TokenName:           tokenName,
+		Quota:               quota,
+		Content:             logContent,
+		TokenId:             relayInfo.TokenId,
+		UseTimeSeconds:      int(useTimeSeconds),
+		IsStream:            relayInfo.IsStream,
+		Group:               relayInfo.UsingGroup,
+		Other:               other,
 	})
 }
