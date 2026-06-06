@@ -166,10 +166,10 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 	var nullBytes []byte
 	//var requestBody io.Reader
 	//requestBody = c.Request.Body
-	// read request body to json, delete accountFilter and notifyHook
-	var mapResult map[string]interface{}
-	// if get request, no need to read request body
+	// read request body to json, delete accountFilter and notifyHook (GET 无 body，避免 Marshal(nil map) 变成 JSON "null" 发给上游)
+	var body io.Reader = http.NoBody
 	if c.Request.Method != "GET" {
+		var mapResult map[string]interface{}
 		err := json.NewDecoder(c.Request.Body).Decode(&mapResult)
 		if err != nil {
 			return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "read_request_body_failed", http.StatusInternalServerError), nullBytes, err
@@ -180,23 +180,22 @@ func DoMidjourneyHttpRequest(c *gin.Context, timeout time.Duration, fullRequestU
 		if !setting.MjNotifyEnabled {
 			delete(mapResult, "notifyHook")
 		}
-		//req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
-		// make new request with mapResult
-	}
-	if setting.MjModeClearEnabled {
-		if prompt, ok := mapResult["prompt"].(string); ok {
-			prompt = strings.Replace(prompt, "--fast", "", -1)
-			prompt = strings.Replace(prompt, "--relax", "", -1)
-			prompt = strings.Replace(prompt, "--turbo", "", -1)
+		if setting.MjModeClearEnabled {
+			if prompt, ok := mapResult["prompt"].(string); ok {
+				prompt = strings.Replace(prompt, "--fast", "", -1)
+				prompt = strings.Replace(prompt, "--relax", "", -1)
+				prompt = strings.Replace(prompt, "--turbo", "", -1)
 
-			mapResult["prompt"] = prompt
+				mapResult["prompt"] = prompt
+			}
 		}
+		reqBody, err := json.Marshal(mapResult)
+		if err != nil {
+			return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "marshal_request_body_failed", http.StatusInternalServerError), nullBytes, err
+		}
+		body = strings.NewReader(string(reqBody))
 	}
-	reqBody, err := json.Marshal(mapResult)
-	if err != nil {
-		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "marshal_request_body_failed", http.StatusInternalServerError), nullBytes, err
-	}
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, strings.NewReader(string(reqBody)))
+	req, err := http.NewRequest(c.Request.Method, fullRequestURL, body)
 	if err != nil {
 		return MidjourneyErrorWithStatusCodeWrapper(constant.MjErrorUnknown, "create_request_failed", http.StatusInternalServerError), nullBytes, err
 	}

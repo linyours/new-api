@@ -17,6 +17,9 @@ const (
 // PreConsumeBilling 根据用户计费偏好创建 BillingSession 并执行预扣费。
 // 会话存储在 relayInfo.Billing 上，供后续 Settle / Refund 使用。
 func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycommon.RelayInfo) *types.NewAPIError {
+	if e := checkRouterUserAgentQuotaForPreConsume(relayInfo.UserId, preConsumedQuota); e != nil {
+		return e
+	}
 	session, apiErr := NewBillingSession(c, relayInfo, preConsumedQuota)
 	if apiErr != nil {
 		return apiErr
@@ -57,6 +60,10 @@ func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuo
 		if err := relayInfo.Billing.Settle(actualQuota); err != nil {
 			return err
 		}
+		agentActualQuota := getAgentActualQuotaForSettle(relayInfo, actualQuota)
+		if err := updateAgentUsedQuotaStats(ctx, relayInfo.UserId, agentActualQuota); err != nil {
+			logger.LogError(ctx, fmt.Sprintf("代理已用额度统计更新失败（userId=%d, actualQuota=%d）: %s", relayInfo.UserId, actualQuota, err.Error()))
+		}
 
 		// 发送额度通知（订阅计费使用订阅剩余额度）
 		if actualQuota != 0 {
@@ -72,7 +79,16 @@ func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuo
 	// 回退：无 BillingSession 时使用旧路径
 	quotaDelta := actualQuota - relayInfo.FinalPreConsumedQuota
 	if quotaDelta != 0 {
-		return PostConsumeQuota(relayInfo, quotaDelta, relayInfo.FinalPreConsumedQuota, true)
+		if err := PostConsumeQuota(relayInfo, quotaDelta, relayInfo.FinalPreConsumedQuota, true); err != nil {
+			return err
+		}
+	}
+	agentActualQuota := getAgentActualQuotaForSettle(relayInfo, actualQuota)
+	if err := mirrorConsumeQuotaToAgent(ctx, relayInfo.UserId, agentActualQuota); err != nil {
+		logger.LogError(ctx, fmt.Sprintf("代理同步扣费失败（userId=%d, actualQuota=%d）: %s", relayInfo.UserId, actualQuota, err.Error()))
+	}
+	if err := updateAgentUsedQuotaStats(ctx, relayInfo.UserId, agentActualQuota); err != nil {
+		logger.LogError(ctx, fmt.Sprintf("代理已用额度统计更新失败（userId=%d, actualQuota=%d）: %s", relayInfo.UserId, actualQuota, err.Error()))
 	}
 	return nil
 }

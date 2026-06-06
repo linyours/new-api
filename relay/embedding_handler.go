@@ -3,7 +3,6 @@ package relay
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
@@ -59,7 +58,7 @@ func EmbeddingHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	}
 
 	logger.LogDebug(c, fmt.Sprintf("converted embedding request body: %s", string(jsonData)))
-	var requestBody io.Reader = bytes.NewBuffer(jsonData)
+	requestBody := bytes.NewBuffer(jsonData)
 	statusCodeMappingStr := c.GetString("status_code_mapping")
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
@@ -83,6 +82,6 @@ func EmbeddingHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError
 	}
-	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), nil)
+	postConsumeQuota(c, info, usage.(*dto.Usage))
 	return nil
 }

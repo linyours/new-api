@@ -44,7 +44,6 @@ var claudeModelMap = map[string]string{
 	"claude-haiku-4-5-20251001":  "claude-haiku-4-5@20251001",
 	"claude-opus-4-5-20251101":   "claude-opus-4-5@20251101",
 	"claude-opus-4-6":            "claude-opus-4-6",
-	"claude-opus-4-7":            "claude-opus-4-7",
 }
 
 const anthropicVersion = "vertex-2023-10-16"
@@ -134,11 +133,47 @@ func (a *Adaptor) getRequestUrl(info *relaycommon.RelayInfo, modelName, suffix s
 		a.AccountCredentials = *adc
 
 		if a.RequestMode == RequestModeGemini {
-			return BuildGoogleModelURL(info.ChannelBaseUrl, DefaultAPIVersion, adc.ProjectID, region, modelName, suffix), nil
+			if region == "global" {
+				return fmt.Sprintf(
+					"https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:%s",
+					adc.ProjectID,
+					modelName,
+					suffix,
+				), nil
+			} else {
+				return fmt.Sprintf(
+					"https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/google/models/%s:%s",
+					region,
+					adc.ProjectID,
+					region,
+					modelName,
+					suffix,
+				), nil
+			}
 		} else if a.RequestMode == RequestModeClaude {
-			return BuildAnthropicModelURL(info.ChannelBaseUrl, DefaultAPIVersion, adc.ProjectID, region, modelName, suffix), nil
+			if region == "global" {
+				return fmt.Sprintf(
+					"https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/anthropic/models/%s:%s",
+					adc.ProjectID,
+					modelName,
+					suffix,
+				), nil
+			} else {
+				return fmt.Sprintf(
+					"https://%s-aiplatform.googleapis.com/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:%s",
+					region,
+					adc.ProjectID,
+					region,
+					modelName,
+					suffix,
+				), nil
+			}
 		} else if a.RequestMode == RequestModeOpenSource {
-			return BuildOpenSourceChatCompletionsURL(info.ChannelBaseUrl, adc.ProjectID, region), nil
+			return fmt.Sprintf(
+				"https://aiplatform.googleapis.com/v1beta1/projects/%s/locations/%s/endpoints/openapi/chat/completions",
+				adc.ProjectID,
+				region,
+			), nil
 		}
 	} else {
 		var keyPrefix string
@@ -147,17 +182,20 @@ func (a *Adaptor) getRequestUrl(info *relaycommon.RelayInfo, modelName, suffix s
 		} else {
 			keyPrefix = "?"
 		}
-		if a.RequestMode == RequestModeGemini {
+		if region == "global" {
 			return fmt.Sprintf(
-				"%s%skey=%s",
-				BuildGoogleModelURL(info.ChannelBaseUrl, DefaultAPIVersion, "", region, modelName, suffix),
+				"https://aiplatform.googleapis.com/v1/publishers/google/models/%s:%s%skey=%s",
+				modelName,
+				suffix,
 				keyPrefix,
 				info.ApiKey,
 			), nil
-		} else if a.RequestMode == RequestModeClaude {
+		} else {
 			return fmt.Sprintf(
-				"%s%skey=%s",
-				BuildAnthropicModelURL(info.ChannelBaseUrl, DefaultAPIVersion, "", region, modelName, suffix),
+				"https://%s-aiplatform.googleapis.com/v1/publishers/google/models/%s:%s%skey=%s",
+				region,
+				modelName,
+				suffix,
 				keyPrefix,
 				info.ApiKey,
 			), nil

@@ -20,10 +20,9 @@ type ChannelAffinityRule struct {
 
 	ParamOverrideTemplate map[string]interface{} `json:"param_override_template,omitempty"`
 
-	SkipRetryOnFailure bool `json:"skip_retry_on_failure"`
+	SkipRetryOnFailure bool `json:"skip_retry_on_failure,omitempty"`
 
 	IncludeUsingGroup bool `json:"include_using_group"`
-	IncludeModelName  bool `json:"include_model_name"`
 	IncludeRuleName   bool `json:"include_rule_name"`
 }
 
@@ -89,7 +88,7 @@ var channelAffinitySetting = ChannelAffinitySetting{
 			ValueRegex:            "",
 			TTLSeconds:            0,
 			ParamOverrideTemplate: buildPassHeaderTemplate(codexCliPassThroughHeaders),
-			SkipRetryOnFailure:    true,
+			SkipRetryOnFailure:    false,
 			IncludeUsingGroup:     true,
 			IncludeRuleName:       true,
 			UserAgentInclude:      nil,
@@ -104,7 +103,7 @@ var channelAffinitySetting = ChannelAffinitySetting{
 			ValueRegex:            "",
 			TTLSeconds:            0,
 			ParamOverrideTemplate: buildPassHeaderTemplate(claudeCliPassThroughHeaders),
-			SkipRetryOnFailure:    true,
+			SkipRetryOnFailure:    false,
 			IncludeUsingGroup:     true,
 			IncludeRuleName:       true,
 			UserAgentInclude:      nil,

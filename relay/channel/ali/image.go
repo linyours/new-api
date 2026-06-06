@@ -54,6 +54,7 @@ func oaiImage2AliImageRequest(info *relaycommon.RelayInfo, request dto.ImageRequ
 		}
 	}
 
+	// 检查n参数
 	if imageRequest.Parameters.N != 0 {
 		info.PriceData.AddOtherRatio("n", float64(imageRequest.Parameters.N))
 	}
@@ -180,7 +181,6 @@ func oaiFormEdit2AliImageEdit(c *gin.Context, info *relaycommon.RelayInfo, reque
 		},
 	}
 	imageRequest.Parameters = AliImageParameters{
-		N:         int(lo.FromPtrOr(request.N, uint(1))),
 		Watermark: request.Watermark,
 	}
 	return &imageRequest, nil
@@ -328,6 +328,7 @@ func aliImageHandler(a *Adaptor, c *gin.Context, resp *http.Response, info *rela
 	}
 
 	imageResponses := responseAli2OpenAIImage(c, aliResponse, originRespBody, info, responseFormat)
+	// 可能生成多张图片，修正计费数量n
 	if aliResponse.Usage.ImageCount != 0 {
 		info.PriceData.AddOtherRatio("n", float64(aliResponse.Usage.ImageCount))
 	} else if len(imageResponses.Data) != 0 {

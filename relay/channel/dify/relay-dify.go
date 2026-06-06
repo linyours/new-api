@@ -223,32 +223,33 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	usage := &dto.Usage{}
 	var nodeToken int
 	helper.SetEventStreamHeaders(c)
-	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+	helper.StreamScannerHandler(c, resp, info, func(data string) bool {
 		var difyResponse DifyChunkChatCompletionResponse
-		if err := json.Unmarshal([]byte(data), &difyResponse); err != nil {
+		err := json.Unmarshal([]byte(data), &difyResponse)
+		if err != nil {
 			common.SysLog("error unmarshalling stream response: " + err.Error())
-			sr.Error(err)
-			return
+			return true
 		}
+		var openaiResponse dto.ChatCompletionsStreamResponse
 		if difyResponse.Event == "message_end" {
 			usage = &difyResponse.MetaData.Usage
-			sr.Done()
-			return
+			return false
 		} else if difyResponse.Event == "error" {
-			sr.Stop(fmt.Errorf("dify error event"))
-			return
-		}
-		openaiResponse := *streamResponseDify2OpenAI(difyResponse)
-		if len(openaiResponse.Choices) != 0 {
-			responseText += openaiResponse.Choices[0].Delta.GetContentString()
-			if openaiResponse.Choices[0].Delta.ReasoningContent != nil {
-				nodeToken += 1
+			return false
+		} else {
+			openaiResponse = *streamResponseDify2OpenAI(difyResponse)
+			if len(openaiResponse.Choices) != 0 {
+				responseText += openaiResponse.Choices[0].Delta.GetContentString()
+				if openaiResponse.Choices[0].Delta.ReasoningContent != nil {
+					nodeToken += 1
+				}
 			}
 		}
-		if err := helper.ObjectData(c, openaiResponse); err != nil {
+		err = helper.ObjectData(c, openaiResponse)
+		if err != nil {
 			common.SysLog(err.Error())
-			sr.Error(err)
 		}
+		return true
 	})
 	helper.Done(c)
 	if usage.TotalTokens == 0 {

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
@@ -42,32 +41,11 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
-	requestURL := fmt.Sprintf("%s/v1/messages", info.ChannelBaseUrl)
-	if !shouldAppendClaudeBetaQuery(info) {
-		return requestURL, nil
-	}
-
-	parsedURL, err := url.Parse(requestURL)
-	if err != nil {
-		return "", err
-	}
-	query := parsedURL.Query()
-	query.Set("beta", "true")
-	parsedURL.RawQuery = query.Encode()
-	return parsedURL.String(), nil
-}
-
-func shouldAppendClaudeBetaQuery(info *relaycommon.RelayInfo) bool {
-	if info == nil {
-		return false
-	}
+	baseURL := fmt.Sprintf("%s/v1/messages", info.ChannelBaseUrl)
 	if info.IsClaudeBetaQuery {
-		return true
+		baseURL = baseURL + "?beta=true"
 	}
-	if info.ChannelOtherSettings.ClaudeBetaQuery {
-		return true
-	}
-	return false
+	return baseURL, nil
 }
 
 func CommonClaudeHeadersOperation(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) {

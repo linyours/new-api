@@ -171,17 +171,12 @@ type AliImageRequest struct {
 }
 
 type AliImageParameters struct {
-	Size             string `json:"size,omitempty"`
-	N                int    `json:"n,omitempty"`
-	Steps            string `json:"steps,omitempty"`
-	Scale            string `json:"scale,omitempty"`
-	Watermark        *bool  `json:"watermark,omitempty"`
-	PromptExtend     *bool  `json:"prompt_extend,omitempty"`
-	ThinkingMode     *bool  `json:"thinking_mode,omitempty"`
-	EnableSequential *bool  `json:"enable_sequential,omitempty"`
-	BboxList         any    `json:"bbox_list,omitempty"`
-	ColorPalette     any    `json:"color_palette,omitempty"`
-	Seed             *int   `json:"seed,omitempty"`
+	Size         string `json:"size,omitempty"`
+	N            int    `json:"n,omitempty"`
+	Steps        string `json:"steps,omitempty"`
+	Scale        string `json:"scale,omitempty"`
+	Watermark    *bool  `json:"watermark,omitempty"`
+	PromptExtend *bool  `json:"prompt_extend,omitempty"`
 }
 
 func (p *AliImageParameters) PromptExtendValue() bool {

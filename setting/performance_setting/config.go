@@ -36,7 +36,7 @@ var performanceSetting = PerformanceSetting{
 	MonitorEnabled:         true,
 	MonitorCPUThreshold:    90,
 	MonitorMemoryThreshold: 90,
-	MonitorDiskThreshold:   95,
+	MonitorDiskThreshold:   90,
 }
 
 func init() {

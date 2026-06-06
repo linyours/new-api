@@ -17,7 +17,6 @@ var defaultQwenSettings = QwenSettings{
 		"z-image",
 		"qwen-image",
 		"wan2.6",
-		"wan2.7",
 		"qwen-image-edit",
 		"qwen-image-edit-max",
 		"qwen-image-edit-max-2026-01-16",

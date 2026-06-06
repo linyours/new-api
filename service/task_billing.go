@@ -12,11 +12,13 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 )
 
 // LogTaskConsumption 记录任务消费日志和统计信息（仅记录，不涉及实际扣费）。
 // 实际扣费已由 BillingSession（PreConsumeBilling + SettleBilling）完成。
-func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
+// preQuotaUndiscounted：RelayTask 定价得到的折前整数 quota；billedQuota：SettleBilling 使用的折后额度；mult：用户折扣乘子。
+func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo, preQuotaUndiscounted, billedQuota int, mult decimal.Decimal) {
 	tokenName := c.GetString("token_name")
 	logContent := fmt.Sprintf("操作 %s", info.Action)
 	// 支持任务仅按次计费
@@ -36,12 +38,8 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
 		}
 	}
 	other := make(map[string]interface{})
-	other["is_task"] = true
 	other["request_path"] = c.Request.URL.Path
 	other["model_price"] = info.PriceData.ModelPrice
-	if info.PriceData.ModelRatio > 0 {
-		other["model_ratio"] = info.PriceData.ModelRatio
-	}
 	other["group_ratio"] = info.PriceData.GroupRatioInfo.GroupRatio
 	if info.PriceData.GroupRatioInfo.HasSpecialRatio {
 		other["user_group_ratio"] = info.PriceData.GroupRatioInfo.GroupSpecialRatio
@@ -50,18 +48,19 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
 		other["is_model_mapped"] = true
 		other["upstream_model_name"] = info.UpstreamModelName
 	}
+	EnrichMjConsumeOtherWithDiscount(c, info, info.OriginModelName, info.PriceData.GroupRatioInfo.GroupRatio, preQuotaUndiscounted, mult, other)
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
 		ChannelId: info.ChannelId,
 		ModelName: info.OriginModelName,
 		TokenName: tokenName,
-		Quota:     info.PriceData.Quota,
+		Quota:     billedQuota,
 		Content:   logContent,
 		TokenId:   info.TokenId,
 		Group:     info.UsingGroup,
 		Other:     other,
 	})
-	model.UpdateUserUsedQuotaAndRequestCount(info.UserId, info.PriceData.Quota)
-	model.UpdateChannelUsedQuota(info.ChannelId, info.PriceData.Quota)
+	model.UpdateUserUsedQuotaAndRequestCount(info.UserId, billedQuota)
+	model.UpdateChannelUsedQuota(info.ChannelId, billedQuota)
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +89,7 @@ func taskAdjustFunding(task *model.Task, delta int) error {
 		return model.PostConsumeUserSubscriptionDelta(task.PrivateData.SubscriptionId, int64(delta))
 	}
 	if delta > 0 {
-		return model.DecreaseUserQuota(task.UserId, delta, false)
+		return model.DecreaseUserQuota(task.UserId, delta)
 	}
 	return model.IncreaseUserQuota(task.UserId, -delta, false)
 }
@@ -121,9 +120,6 @@ func taskBillingOther(task *model.Task) map[string]interface{} {
 	other := make(map[string]interface{})
 	if bc := task.PrivateData.BillingContext; bc != nil {
 		other["model_price"] = bc.ModelPrice
-		if bc.ModelRatio > 0 {
-			other["model_ratio"] = bc.ModelRatio
-		}
 		other["group_ratio"] = bc.GroupRatio
 		if len(bc.OtherRatios) > 0 {
 			for k, v := range bc.OtherRatios {
@@ -147,6 +143,18 @@ func taskModelName(task *model.Task) string {
 	return task.Properties.OriginModelName
 }
 
+// resolveTaskUsernameForDiscount 异步任务完成阶段从 UserId 取 Username（Task 上无 Username 字段）。
+func resolveTaskUsernameForDiscount(task *model.Task) string {
+	if task == nil {
+		return ""
+	}
+	u, err := model.GetUserById(task.UserId, false)
+	if err != nil || u == nil {
+		return ""
+	}
+	return strings.TrimSpace(u.Username)
+}
+
 // RefundTaskQuota 统一的任务失败退款逻辑。
 // 当异步任务失败时，将预扣的 quota 退还给用户（支持钱包和订阅），并退还令牌额度。
 func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) {
@@ -166,6 +174,9 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) {
 
 	// 3. 记录日志
 	other := taskBillingOther(task)
+	username := resolveTaskUsernameForDiscount(task)
+	mult := GetUserDiscountMultiplier(username, strings.TrimSpace(task.Group), taskModelName(task))
+	EnrichOtherWithPostDiscountQuotaUSD(username, strings.TrimSpace(task.Group), taskModelName(task), quota, mult, other)
 	other["task_id"] = task.TaskID
 	other["reason"] = reason
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
@@ -182,12 +193,17 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) {
 }
 
 // RecalculateTaskQuota 通用的异步差额结算。
-// actualQuota 是任务完成后的实际应扣额度，与预扣额度 (task.Quota) 做差额结算。
+// actualQuota 是任务完成后的实际应扣额度（折前口径，与 PreConsume/定价一致），与预扣额度 (task.Quota，折后) 比较前会先乘同一用户折扣。
 // reason 用于日志记录（例如 "token重算" 或 "adaptor调整"）。
 func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int, reason string) {
 	if actualQuota <= 0 {
 		return
 	}
+	username := resolveTaskUsernameForDiscount(task)
+	group := strings.TrimSpace(task.Group)
+	modelName := taskModelName(task)
+	preDiscountActual := actualQuota
+	actualQuota, mult := MjPerCallQuotaAfterUserDiscount(username, group, modelName, preDiscountActual)
 	preConsumedQuota := task.Quota
 	quotaDelta := actualQuota - preConsumedQuota
 
@@ -228,7 +244,9 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 		logQuota = -quotaDelta
 	}
 	other := taskBillingOther(task)
+	EnrichOtherWithPreDiscountQuotaUSD(username, group, modelName, preDiscountActual, mult, other)
 	other["task_id"] = task.TaskID
+	//other["reason"] = reason
 	other["pre_consumed_quota"] = preConsumedQuota
 	other["actual_quota"] = actualQuota
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
@@ -283,19 +301,9 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 		finalGroupRatio = groupRatio
 	}
 
-	// 计算 OtherRatios 乘积（视频折扣、时长等）
-	otherMultiplier := 1.0
-	if bc := task.PrivateData.BillingContext; bc != nil {
-		for _, r := range bc.OtherRatios {
-			if r != 1.0 && r > 0 {
-				otherMultiplier *= r
-			}
-		}
-	}
+	// 计算实际应扣费额度: totalTokens * modelRatio * groupRatio
+	actualQuota := int(float64(totalTokens) * modelRatio * finalGroupRatio)
 
-	// 计算实际应扣费额度: totalTokens * modelRatio * groupRatio * otherMultiplier
-	actualQuota := int(float64(totalTokens) * modelRatio * finalGroupRatio * otherMultiplier)
-
-	reason := fmt.Sprintf("token重算：tokens=%d, modelRatio=%.2f, groupRatio=%.2f, otherMultiplier=%.4f", totalTokens, modelRatio, finalGroupRatio, otherMultiplier)
+	reason := fmt.Sprintf("token重算：tokens=%d, modelRatio=%.2f, groupRatio=%.2f", totalTokens, modelRatio, finalGroupRatio)
 	RecalculateTaskQuota(ctx, task, actualQuota, reason)
 }
