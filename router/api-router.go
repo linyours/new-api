@@ -225,6 +225,12 @@ func SetApiRouter(router *gin.Engine) {
 			performanceRoute.GET("/logs", controller.GetLogFiles)
 			performanceRoute.DELETE("/logs", controller.CleanupLogFiles)
 		}
+		monitorRoute := apiRouter.Group("/monitor")
+		monitorRoute.Use(middleware.RootAuth())
+		{
+			monitorRoute.GET("/ttft/config", controller.GetTTFTMonitorConfig)
+			monitorRoute.PUT("/ttft/config", controller.UpdateTTFTMonitorConfig)
+		}
 		ratioSyncRoute := apiRouter.Group("/ratio_sync")
 		ratioSyncRoute.Use(middleware.RootAuth())
 		{

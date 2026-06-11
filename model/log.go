@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/types"
 
+	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
 
 	"gorm.io/gorm"
@@ -57,24 +58,25 @@ func sanitizeClickHouseLikePattern(input string) (string, error) {
 }
 
 type Log struct {
-	Id                int    `json:"id" gorm:"index:idx_created_at_id,priority:2;index:idx_user_id_id,priority:2"`
-	UserId            int    `json:"user_id" gorm:"index;index:idx_user_id_id,priority:1"`
-	CreatedAt         int64  `json:"created_at" gorm:"bigint;index:idx_created_at_id,priority:1;index:idx_created_at_type"`
-	Type              int    `json:"type" gorm:"index:idx_created_at_type"`
-	Content           string `json:"content"`
-	Username          string `json:"username" gorm:"index;index:index_username_model_name,priority:2;default:''"`
-	TokenName         string `json:"token_name" gorm:"index;default:''"`
-	ModelName         string `json:"model_name" gorm:"index;index:index_username_model_name,priority:1;default:''"`
-	Quota             int    `json:"quota" gorm:"default:0"`
-	PromptTokens      int    `json:"prompt_tokens" gorm:"default:0"`
-	CompletionTokens  int    `json:"completion_tokens" gorm:"default:0"`
-	UseTime           int    `json:"use_time" gorm:"default:0"`
-	IsStream          bool   `json:"is_stream"`
-	ChannelId         int    `json:"channel" gorm:"index"`
-	ChannelName       string `json:"channel_name" gorm:"->"`
-	TokenId           int    `json:"token_id" gorm:"default:0;index"`
-	Group             string `json:"group" gorm:"index"`
-	Ip                string `json:"ip" gorm:"index;default:''"`
+	Id               int    `json:"id" gorm:"index:idx_created_at_id,priority:1;index:idx_user_id_id,priority:2"`
+	UserId           int    `json:"user_id" gorm:"index;index:idx_user_id_id,priority:1"`
+	CreatedAt        int64  `json:"created_at" gorm:"bigint;index:idx_created_at_id,priority:2;index:idx_created_at_type"`
+	Type             int    `json:"type" gorm:"index:idx_created_at_type"`
+	Content          string `json:"content"`
+	Username         string `json:"username" gorm:"index;index:index_username_model_name,priority:2;default:''"`
+	TokenName        string `json:"token_name" gorm:"index;default:''"`
+	ModelName        string `json:"model_name" gorm:"index;index:index_username_model_name,priority:1;default:''"`
+	Quota            int    `json:"quota" gorm:"default:0"`
+	PromptTokens        int `json:"prompt_tokens" gorm:"default:0"`
+	CacheCreationTokens int `json:"cache_creation_tokens" gorm:"default:0"`
+	CompletionTokens    int `json:"completion_tokens" gorm:"default:0"`
+	UseTime          int    `json:"use_time" gorm:"default:0"`
+	IsStream         bool   `json:"is_stream"`
+	ChannelId        int    `json:"channel" gorm:"index"`
+	ChannelName      string `json:"channel_name" gorm:"->"`
+	TokenId          int    `json:"token_id" gorm:"default:0;index"`
+	Group            string `json:"group" gorm:"index"`
+	Ip               string `json:"ip" gorm:"index;default:''"`
 	RequestId         string `json:"request_id,omitempty" gorm:"type:varchar(64);index:idx_logs_request_id;default:''"`
 	UpstreamRequestId string `json:"upstream_request_id,omitempty" gorm:"type:varchar(128);index:idx_logs_upstream_request_id;default:''"`
 	Other             string `json:"other"`
@@ -281,7 +283,7 @@ func RecordTopupLog(userId int, content string, callerIp string, paymentMethod s
 
 func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string, tokenName string, content string, tokenId int, useTimeSeconds int,
 	isStream bool, group string, other map[string]interface{}) {
-	logger.LogInfo(c, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, common.LocalLogPreview(content)))
+	logger.LogInfo(c, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, content))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
@@ -326,9 +328,10 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 }
 
 type RecordConsumeLogParams struct {
-	ChannelId        int                    `json:"channel_id"`
-	PromptTokens     int                    `json:"prompt_tokens"`
-	CompletionTokens int                    `json:"completion_tokens"`
+	ChannelId           int                    `json:"channel_id"`
+	PromptTokens        int                    `json:"prompt_tokens"`
+	CacheCreationTokens int                    `json:"cache_creation_tokens"`
+	CompletionTokens    int                    `json:"completion_tokens"`
 	ModelName        string                 `json:"model_name"`
 	TokenName        string                 `json:"token_name"`
 	Quota            int                    `json:"quota"`
@@ -337,7 +340,31 @@ type RecordConsumeLogParams struct {
 	UseTimeSeconds   int                    `json:"use_time_seconds"`
 	IsStream         bool                   `json:"is_stream"`
 	Group            string                 `json:"group"`
-	Other            map[string]interface{} `json:"other"`
+	Other map[string]interface{} `json:"other"`
+}
+
+// OnConsumeLogRecorded is an optional async callback invoked after consume log persistence.
+// It is wired by main/service to avoid introducing model -> service import cycles.
+var OnConsumeLogRecorded func(log *Log, userId int, params RecordConsumeLogParams)
+
+// LoggedITPM returns Anthropic-aligned input tokens for rate-limit style stats:
+// input_tokens + cache_creation_input_tokens (excludes cache read and output tokens).
+func LoggedITPM(promptTokens, cacheCreationTokens int) int {
+	if promptTokens < 0 {
+		promptTokens = 0
+	}
+	if cacheCreationTokens < 0 {
+		cacheCreationTokens = 0
+	}
+	return promptTokens + cacheCreationTokens
+}
+
+func (p RecordConsumeLogParams) LoggedITPM() int {
+	return LoggedITPM(p.PromptTokens, p.CacheCreationTokens)
+}
+
+func logITPMSumSelectExpr() string {
+	return "COALESCE(sum(prompt_tokens), 0) + COALESCE(sum(cache_creation_tokens), 0)"
 }
 
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
@@ -363,9 +390,10 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		CreatedAt:        createdAt,
 		Type:             LogTypeConsume,
 		Content:          params.Content,
-		PromptTokens:     params.PromptTokens,
-		CompletionTokens: params.CompletionTokens,
-		TokenName:        params.TokenName,
+		PromptTokens:        params.PromptTokens,
+		CacheCreationTokens: params.CacheCreationTokens,
+		CompletionTokens:    params.CompletionTokens,
+		TokenName:           params.TokenName,
 		ModelName:        params.ModelName,
 		Quota:            params.Quota,
 		ChannelId:        params.ChannelId,
@@ -386,6 +414,14 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	err := createLog(log)
 	if err != nil {
 		logger.LogError(c, "failed to record log: "+err.Error())
+		return
+	}
+	if OnConsumeLogRecorded != nil {
+		logCopy := *log
+		paramsCopy := params
+		gopool.Go(func() {
+			OnConsumeLogRecorded(&logCopy, userId, paramsCopy)
+		})
 	}
 	if common.DataExportEnabled {
 		LogQuotaData(QuotaDataLogParams{
@@ -416,11 +452,65 @@ type RecordTaskBillingLogParams struct {
 	NodeName  string // 任务发起节点；为空时回退当前节点
 }
 
+// FillRefundTaskBillingOtherFunc 由 service.init 或 main 注入，在退费日志落库前补齐 discount_* / group_ratio 等字段；
+// 避免 model 包直接依赖 service 产生循环引用。若 other 已含有效 discount_target_usd 则跳过（兼容已 enrich 的调用方）。
+var FillRefundTaskBillingOtherFunc func(username string, group string, modelName string, quota int, other map[string]interface{})
+
+// refundOtherMissingDiscountTargetUSD 为 true 时表示需要在落库前补全折扣字段。
+// 注意：仅当 discount_target_usd 为非空字符串时才视为已落表；若为 float64/json.Number 等（历史或异常数据），
+// 旧实现会误判为「已存在」从而跳过整个 enrich，导致 other 只有 task_id/reason。
+func refundOtherMissingDiscountTargetUSD(other map[string]interface{}) bool {
+	if other == nil {
+		return false
+	}
+	v, ok := other["discount_target_usd"]
+	if !ok || v == nil {
+		return true
+	}
+	s, isStr := v.(string)
+	if !isStr {
+		return true
+	}
+	return strings.TrimSpace(s) == ""
+}
+
+// applyMinimalRefundBillingOtherFields 无 service 回调时的兜底（等价于用户折扣乘子=1），保证字段非空便于对账/展示。
+func applyMinimalRefundBillingOtherFields(quota int, other map[string]interface{}) {
+	if other == nil || quota <= 0 {
+		return
+	}
+	dppu := common.QuotaPerUnit
+	if dppu <= 0 {
+		dppu = 500000
+	}
+	other["discount_target_usd"] = fmt.Sprintf("%.6f", float64(quota)/dppu)
+	other["pre_user_discount_usd"] = quota
+	other["platform_discount_multiplier"] = float64(1)
+}
+
 func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	if params.LogType == LogTypeConsume && !common.LogConsumeEnabled {
 		return
 	}
 	username, _ := GetUsernameById(params.UserId, false)
+	logGroup := strings.TrimSpace(params.Group)
+	if logGroup == "" && params.UserId > 0 {
+		if u, err := GetUserById(params.UserId, false); err == nil && u != nil {
+			logGroup = strings.TrimSpace(u.Group)
+		}
+	}
+	if params.LogType == LogTypeRefund && params.Other != nil && params.Quota > 0 && refundOtherMissingDiscountTargetUSD(params.Other) {
+		if FillRefundTaskBillingOtherFunc != nil {
+			FillRefundTaskBillingOtherFunc(strings.TrimSpace(username), logGroup, strings.TrimSpace(params.ModelName), params.Quota, params.Other)
+		}
+		if refundOtherMissingDiscountTargetUSD(params.Other) {
+			applyMinimalRefundBillingOtherFields(params.Quota, params.Other)
+		}
+	}
+	// 最后一道兜底：避免上游只写了 task_id/reason 或 discount_target_usd 类型异常时仍跳过 enrich
+	if params.LogType == LogTypeRefund && params.Other != nil && params.Quota > 0 && refundOtherMissingDiscountTargetUSD(params.Other) {
+		applyMinimalRefundBillingOtherFields(params.Quota, params.Other)
+	}
 	tokenName := ""
 	if params.TokenId > 0 {
 		if token, err := GetTokenById(params.TokenId); err == nil {
@@ -439,7 +529,7 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 		Quota:     params.Quota,
 		ChannelId: params.ChannelId,
 		TokenId:   params.TokenId,
-		Group:     params.Group,
+		Group:     logGroup,
 		Other:     common.MapToJsonStr(params.Other),
 	}
 	err := createLog(log)
@@ -473,11 +563,11 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 		tx = LOG_DB.Where("logs.type = ?", logType)
 	}
 
-	if tx, err = applyExplicitLogTextFilter(tx, "logs.model_name", modelName); err != nil {
-		return nil, 0, err
+	if modelName != "" {
+		tx = tx.Where("logs.model_name like ?", modelName)
 	}
-	if tx, err = applyExplicitLogTextFilter(tx, "logs.username", username); err != nil {
-		return nil, 0, err
+	if username != "" {
+		tx = tx.Where("logs.username = ?", username)
 	}
 	if tokenName != "" {
 		tx = tx.Where("logs.token_name = ?", tokenName)
@@ -569,8 +659,12 @@ func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int
 		tx = LOG_DB.Where("logs.user_id = ? and logs.type = ?", userId, logType)
 	}
 
-	if tx, err = applyExplicitLogTextFilter(tx, "logs.model_name", modelName); err != nil {
-		return nil, 0, err
+	if modelName != "" {
+		modelNamePattern, err := sanitizeLikePattern(modelName)
+		if err != nil {
+			return nil, 0, err
+		}
+		tx = tx.Where("logs.model_name LIKE ? ESCAPE '!'", modelNamePattern)
 	}
 	if tokenName != "" {
 		tx = tx.Where("logs.token_name = ?", tokenName)
@@ -618,14 +712,12 @@ type Stat struct {
 func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
 	tx := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
 
-	// 为rpm和tpm创建单独的查询
-	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, COALESCE(sum(prompt_tokens), 0) + COALESCE(sum(completion_tokens), 0) tpm")
+	// RPM: requests in the last 60s. TPM: Anthropic ITPM (input_tokens + cache_creation_input_tokens).
+	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, " + logITPMSumSelectExpr() + " tpm")
 
-	if tx, err = applyExplicitLogTextFilter(tx, "username", username); err != nil {
-		return stat, err
-	}
-	if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "username", username); err != nil {
-		return stat, err
+	if username != "" {
+		tx = tx.Where("username = ?", username)
+		rpmTpmQuery = rpmTpmQuery.Where("username = ?", username)
 	}
 	if tokenName != "" {
 		tx = tx.Where("token_name = ?", tokenName)
@@ -637,11 +729,13 @@ func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelNa
 	if endTimestamp != 0 {
 		tx = tx.Where("created_at <= ?", endTimestamp)
 	}
-	if tx, err = applyExplicitLogTextFilter(tx, "model_name", modelName); err != nil {
-		return stat, err
-	}
-	if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "model_name", modelName); err != nil {
-		return stat, err
+	if modelName != "" {
+		modelNamePattern, err := sanitizeLikePattern(modelName)
+		if err != nil {
+			return stat, err
+		}
+		tx = tx.Where("model_name LIKE ? ESCAPE '!'", modelNamePattern)
+		rpmTpmQuery = rpmTpmQuery.Where("model_name LIKE ? ESCAPE '!'", modelNamePattern)
 	}
 	if channel != 0 {
 		tx = tx.Where("channel_id = ?", channel)
