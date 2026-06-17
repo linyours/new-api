@@ -230,6 +230,8 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			monitorRoute.GET("/ttft/config", controller.GetTTFTMonitorConfig)
 			monitorRoute.PUT("/ttft/config", controller.UpdateTTFTMonitorConfig)
+			monitorRoute.GET("/channel_disable/config", controller.GetChannelDisableMonitorConfig)
+			monitorRoute.PUT("/channel_disable/config", controller.UpdateChannelDisableMonitorConfig)
 		}
 		ratioSyncRoute := apiRouter.Group("/ratio_sync")
 		ratioSyncRoute.Use(middleware.RootAuth())

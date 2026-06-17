@@ -31,6 +31,15 @@ func init() {
 func setupStreamTest(t *testing.T, body io.Reader) (*gin.Context, *http.Response, *relaycommon.RelayInfo) {
 	t.Helper()
 
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	oldTTFTTimeout := constant.TTFTTimeoutSeconds
+	constant.TTFTTimeoutSeconds = 0
+	t.Cleanup(func() {
+		constant.StreamingTimeout = oldTimeout
+		constant.TTFTTimeoutSeconds = oldTTFTTimeout
+	})
+
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
@@ -486,6 +495,132 @@ func TestStreamScannerHandler_StreamStatus_Timeout(t *testing.T) {
 	require.NotNil(t, info.StreamStatus)
 	assert.Equal(t, relaycommon.StreamEndReasonTimeout, info.StreamStatus.EndReason)
 	assert.False(t, info.StreamStatus.IsNormalEnd())
+}
+
+func TestStreamScannerHandler_StreamStatus_TTFTTimeoutNoInterrupt(t *testing.T) {
+	// Not parallel: modifies global timeout constants
+	oldTimeout := constant.StreamingTimeout
+	oldTTFTTimeout := constant.TTFTTimeoutSeconds
+	constant.StreamingTimeout = 30
+	constant.TTFTTimeoutSeconds = 1
+	t.Cleanup(func() {
+		constant.StreamingTimeout = oldTimeout
+		constant.TTFTTimeoutSeconds = oldTTFTTimeout
+	})
+
+	pr, pw := io.Pipe()
+	go func() {
+		defer pw.Close()
+		// Delay first chunk to trigger TTFT timeout branch.
+		time.Sleep(1500 * time.Millisecond)
+		fmt.Fprint(pw, "data: {\"id\":1}\n")
+		fmt.Fprint(pw, "data: [DONE]\n")
+	}()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	resp := &http.Response{Body: pr}
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{},
+		StartTime:   time.Now(),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for ttft timeout")
+	}
+
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	assert.True(t, info.StreamStatus.IsNormalEnd())
+	assert.False(t, info.StreamStatus.HasErrors())
+	assert.Equal(t, 0, info.StreamStatus.TotalErrorCount())
+}
+
+func TestStreamScannerHandler_StreamStatus_TTFTTimeoutBeforeScannerStartNoInterrupt(t *testing.T) {
+	// Not parallel: modifies global timeout constants
+	oldTimeout := constant.StreamingTimeout
+	oldTTFTTimeout := constant.TTFTTimeoutSeconds
+	constant.StreamingTimeout = 30
+	constant.TTFTTimeoutSeconds = 1
+	t.Cleanup(func() {
+		constant.StreamingTimeout = oldTimeout
+		constant.TTFTTimeoutSeconds = oldTTFTTimeout
+	})
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader("data: {\"id\":1}\ndata: [DONE]\n"))}
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{},
+		StartTime:   time.Now().Add(-1500 * time.Millisecond), // exceeded before scanner starts
+	}
+
+	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	assert.False(t, info.StreamStatus.HasErrors())
+	assert.Equal(t, 0, info.StreamStatus.TotalErrorCount())
+	assert.Equal(t, 1, info.ReceivedResponseCount)
+}
+
+func TestStreamScannerHandler_StreamStatus_TTFTNotTriggeredAfterFirstChunk(t *testing.T) {
+	// Not parallel: modifies global timeout constants
+	oldTimeout := constant.StreamingTimeout
+	oldTTFTTimeout := constant.TTFTTimeoutSeconds
+	constant.StreamingTimeout = 30
+	constant.TTFTTimeoutSeconds = 1
+	t.Cleanup(func() {
+		constant.StreamingTimeout = oldTimeout
+		constant.TTFTTimeoutSeconds = oldTTFTTimeout
+	})
+
+	pr, pw := io.Pipe()
+	go func() {
+		defer pw.Close()
+		// First chunk arrives quickly (before TTFT timeout), then stream sleeps.
+		fmt.Fprint(pw, "data: {\"id\":1}\n")
+		time.Sleep(1500 * time.Millisecond)
+		fmt.Fprint(pw, "data: [DONE]\n")
+	}()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	resp := &http.Response{Body: pr}
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{},
+		StartTime:   time.Now(),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for stream completion")
+	}
+
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	assert.False(t, info.StreamStatus.HasErrors())
 }
 
 func TestStreamScannerHandler_StreamStatus_SoftErrors(t *testing.T) {

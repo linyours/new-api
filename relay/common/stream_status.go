@@ -10,9 +10,9 @@ import (
 type StreamEndReason string
 
 const (
-	StreamEndReasonNone        StreamEndReason = ""
-	StreamEndReasonDone        StreamEndReason = "done"
-	StreamEndReasonTimeout     StreamEndReason = "timeout"
+	StreamEndReasonNone    StreamEndReason = ""
+	StreamEndReasonDone    StreamEndReason = "done"
+	StreamEndReasonTimeout StreamEndReason = "timeout"
 	StreamEndReasonClientGone  StreamEndReason = "client_gone"
 	StreamEndReasonScannerErr  StreamEndReason = "scanner_error"
 	StreamEndReasonHandlerStop StreamEndReason = "handler_stop"

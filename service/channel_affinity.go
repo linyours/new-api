@@ -661,7 +661,7 @@ func validateChannelAffinityHit(c *gin.Context, channel *model.Channel, modelNam
 
 	if usingGroup == "auto" {
 		userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
-		autoGroups := GetUserAutoGroup(userGroup)
+		autoGroups := GetRequestAutoGroups(c, userGroup)
 		for _, group := range autoGroups {
 			if model.IsChannelEnabledForGroupModel(group, modelName, channel.Id) {
 				common.SetContextKey(c, constant.ContextKeyAutoGroup, group)

@@ -7,8 +7,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"net/url"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -71,10 +71,10 @@ type feishuPostTextBlock struct {
 }
 
 type feishuWebhookResponse struct {
-	Code          *int    `json:"code"`
-	Msg           string  `json:"msg"`
-	StatusCode    *int    `json:"StatusCode"`
-	StatusMessage string  `json:"StatusMessage"`
+	Code          *int   `json:"code"`
+	Msg           string `json:"msg"`
+	StatusCode    *int   `json:"StatusCode"`
+	StatusMessage string `json:"StatusMessage"`
 }
 
 // generateSignature 生成 webhook 签名
@@ -200,6 +200,120 @@ func buildFeishuTTFTCardPayload(title, content string) ([]byte, error) {
 	return common.Marshal(card)
 }
 
+func buildFeishuErrorAlertCardPayload(title, content string) ([]byte, error) {
+	if strings.TrimSpace(title) == "" {
+		title = "渠道错误告警"
+	}
+	card := feishuInteractivePayload{
+		MsgType: "interactive",
+	}
+	card.Card.Config.WideScreenMode = true
+	card.Card.Header.Template = "red"
+	card.Card.Header.Title.Tag = "plain_text"
+	card.Card.Header.Title.Content = title
+
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		md := trimmed
+		if idx := strings.Index(trimmed, "："); idx > 0 && idx < len(trimmed)-1 {
+			key := strings.TrimSpace(trimmed[:idx])
+			val := strings.TrimSpace(trimmed[idx+len("："):])
+			if strings.Contains(strings.ToLower(key), "requestid") {
+				md = fmt.Sprintf("**%s**：`%s`", key, val)
+			} else {
+				md = fmt.Sprintf("**%s**：%s", key, val)
+			}
+		}
+
+		textNode := struct {
+			Tag     string `json:"tag"`
+			Content string `json:"content"`
+		}{
+			Tag:     "lark_md",
+			Content: md,
+		}
+		card.Card.Elements = append(card.Card.Elements, feishuCardElement{
+			Tag:  "div",
+			Text: &textNode,
+		})
+	}
+
+	if len(card.Card.Elements) == 0 {
+		textNode := struct {
+			Tag     string `json:"tag"`
+			Content string `json:"content"`
+		}{
+			Tag:     "lark_md",
+			Content: "渠道错误告警触发，但消息正文为空。",
+		}
+		card.Card.Elements = append(card.Card.Elements, feishuCardElement{
+			Tag:  "div",
+			Text: &textNode,
+		})
+	}
+
+	return common.Marshal(card)
+}
+
+func buildFeishuChannelAutoDisableCardPayload(title, content string) ([]byte, error) {
+	if strings.TrimSpace(title) == "" {
+		title = "通道自动禁用告警"
+	}
+	card := feishuInteractivePayload{
+		MsgType: "interactive",
+	}
+	card.Card.Config.WideScreenMode = true
+	card.Card.Header.Template = "red"
+	card.Card.Header.Title.Tag = "plain_text"
+	card.Card.Header.Title.Content = title
+
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		md := trimmed
+		if idx := strings.Index(trimmed, "："); idx > 0 && idx < len(trimmed)-1 {
+			key := strings.TrimSpace(trimmed[:idx])
+			val := strings.TrimSpace(trimmed[idx+len("："):])
+			md = fmt.Sprintf("**%s**：%s", key, val)
+		}
+
+		textNode := struct {
+			Tag     string `json:"tag"`
+			Content string `json:"content"`
+		}{
+			Tag:     "lark_md",
+			Content: md,
+		}
+		card.Card.Elements = append(card.Card.Elements, feishuCardElement{
+			Tag:  "div",
+			Text: &textNode,
+		})
+	}
+
+	if len(card.Card.Elements) == 0 {
+		textNode := struct {
+			Tag     string `json:"tag"`
+			Content string `json:"content"`
+		}{
+			Tag:     "lark_md",
+			Content: "通道自动禁用告警触发，但消息正文为空。",
+		}
+		card.Card.Elements = append(card.Card.Elements, feishuCardElement{
+			Tag:  "div",
+			Text: &textNode,
+		})
+	}
+
+	return common.Marshal(card)
+}
+
 func buildWebhookPayload(webhookURL string, data dto.Notify) ([]byte, error) {
 	// 处理占位符
 	content := data.Content
@@ -209,6 +323,13 @@ func buildWebhookPayload(webhookURL string, data dto.Notify) ([]byte, error) {
 
 	// Feishu requires msg_type/content payload format.
 	if isFeishuWebhookURL(webhookURL) {
+		if data.Type == dto.NotifyTypeChannelAutoDisableAlert || strings.Contains(data.Title, "自动禁用") {
+			return buildFeishuChannelAutoDisableCardPayload(data.Title, content)
+		}
+		if data.Type == dto.NotifyTypeChannelErrorAlert || strings.Contains(data.Title, "渠道错误") {
+			// 与 TTFT 告警保持同一类 interactive card 风格，便于运维在飞书统一识别。
+			return buildFeishuErrorAlertCardPayload(data.Title, content)
+		}
 		if data.Type == dto.NotifyTypeTTFTAlert || strings.Contains(data.Title, "TTFT") {
 			return buildFeishuTTFTCardPayload(data.Title, content)
 		}
