@@ -26,6 +26,7 @@ import SettingsSensitiveWords from '../../pages/Setting/Operation/SettingsSensit
 import SettingsLog from '../../pages/Setting/Operation/SettingsLog';
 import SettingsMonitoring from '../../pages/Setting/Operation/SettingsMonitoring';
 import SettingsTTFTMonitoring from '../../pages/Setting/Operation/SettingsTTFTMonitoring';
+import SettingsChannelDisableMonitoring from '../../pages/Setting/Operation/SettingsChannelDisableMonitoring';
 import SettingsCreditLimit from '../../pages/Setting/Operation/SettingsCreditLimit';
 import SettingsCheckin from '../../pages/Setting/Operation/SettingsCheckin';
 import { API, showError, toBoolean } from '../../helpers';
@@ -45,6 +46,7 @@ const OperationSetting = () => {
     QuotaPerUnit: 0,
     USDExchangeRate: 0,
     RetryTimes: 0,
+    TTFTTimeoutSeconds: 120,
     'general_setting.quota_display_type': 'USD',
     DisplayTokenStatEnabled: false,
     DefaultCollapseSidebar: false,
@@ -64,6 +66,9 @@ const OperationSetting = () => {
 
     /* 日志设置 */
     LogConsumeEnabled: false,
+    ErrorWebhookAlertEnabled: false,
+    ErrorWebhookAlertURL: '',
+    ErrorWebhookAlertSecret: '',
 
     /* 监控设置 */
     ChannelDisableThreshold: 0,
@@ -150,6 +155,10 @@ const OperationSetting = () => {
         {/* TTFT 监控设置 */}
         <Card style={{ marginTop: '10px' }}>
           <SettingsTTFTMonitoring />
+        </Card>
+        {/* 通道自动禁用告警设置 */}
+        <Card style={{ marginTop: '10px' }}>
+          <SettingsChannelDisableMonitoring />
         </Card>
         {/* 额度设置 */}
         <Card style={{ marginTop: '10px' }}>

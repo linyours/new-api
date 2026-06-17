@@ -44,8 +44,16 @@ export default function SettingsLog(props) {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   const [loadingCleanHistoryLog, setLoadingCleanHistoryLog] = useState(false);
+  // 日志配置表单状态：
+  // - LogConsumeEnabled: 是否记录额度消费日志；
+  // - ErrorWebhookAlertEnabled: 是否开启“渠道错误 -> webhook告警”；
+  // - ErrorWebhookAlertURL: 告警 webhook 地址（通常是飞书机器人地址）；
+  // - ErrorWebhookAlertSecret: webhook 签名密钥（可选）。
   const [inputs, setInputs] = useState({
     LogConsumeEnabled: false,
+    ErrorWebhookAlertEnabled: false,
+    ErrorWebhookAlertURL: '',
+    ErrorWebhookAlertSecret: '',
     historyTimestamp: dayjs().subtract(1, 'month').toDate(),
   });
   const refForm = useRef();
@@ -216,6 +224,54 @@ export default function SettingsLog(props) {
                   }}
                 />
               </Col>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.Switch
+                  field={'ErrorWebhookAlertEnabled'}
+                  label={t('启用渠道错误Webhook告警')}
+                  size='default'
+                  checkedText='｜'
+                  uncheckedText='〇'
+                  onChange={(value) => {
+                    setInputs({
+                      ...inputs,
+                      ErrorWebhookAlertEnabled: value,
+                    });
+                  }}
+                />
+              </Col>
+            </Row>
+
+            <Row gutter={16}>
+              <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                <Form.Input
+                  field={'ErrorWebhookAlertURL'}
+                  label={t('错误告警Webhook地址')}
+                  placeholder={'https://open.feishu.cn/open-apis/bot/v2/hook/xxxx'}
+                  onChange={(value) => {
+                    setInputs({
+                      ...inputs,
+                      ErrorWebhookAlertURL: value,
+                    });
+                  }}
+                />
+              </Col>
+              <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                <Form.Input
+                  field={'ErrorWebhookAlertSecret'}
+                  label={t('错误告警Webhook密钥')}
+                  type='password'
+                  placeholder={t('可选，用于签名')}
+                  onChange={(value) => {
+                    setInputs({
+                      ...inputs,
+                      ErrorWebhookAlertSecret: value,
+                    });
+                  }}
+                />
+              </Col>
+            </Row>
+
+            <Row gutter={16}>
               <Col xs={24} sm={12} md={8} lg={8} xl={8}>
                 <Spin spinning={loadingCleanHistoryLog}>
                   <Form.DatePicker

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -48,6 +49,19 @@ func InitOptionMap() {
 	common.OptionMap["AutomaticDisableChannelEnabled"] = strconv.FormatBool(common.AutomaticDisableChannelEnabled)
 	common.OptionMap["AutomaticEnableChannelEnabled"] = strconv.FormatBool(common.AutomaticEnableChannelEnabled)
 	common.OptionMap["LogConsumeEnabled"] = strconv.FormatBool(common.LogConsumeEnabled)
+	// TTFTTimeoutSeconds:
+	// 流式请求首 token 超时阈值（秒），0 表示禁用。
+	// 默认值来自环境变量 TTFT_TIMEOUT_SECONDS（见 common/init.go）。
+	common.OptionMap["TTFTTimeoutSeconds"] = strconv.Itoa(constant.TTFTTimeoutSeconds)
+	// ErrorLogEnabled:
+	// 原有“错误日志记录开关”，仍然用于控制是否写入错误日志表。
+	common.OptionMap["ErrorLogEnabled"] = strconv.FormatBool(constant.ErrorLogEnabled)
+	// ErrorWebhookAlertEnabled/ErrorWebhookAlertURL/ErrorWebhookAlertSecret:
+	// 新增“错误飞书告警”配置，与错误日志写库开关解耦。
+	// 只要 ErrorWebhookAlertEnabled=true 且 URL 非空，就会在渠道报错时发 webhook 告警。
+	common.OptionMap["ErrorWebhookAlertEnabled"] = strconv.FormatBool(setting.ErrorWebhookAlertEnabled)
+	common.OptionMap["ErrorWebhookAlertURL"] = setting.ErrorWebhookAlertURL
+	common.OptionMap["ErrorWebhookAlertSecret"] = setting.ErrorWebhookAlertSecret
 	common.OptionMap["DisplayInCurrencyEnabled"] = strconv.FormatBool(common.DisplayInCurrencyEnabled)
 	common.OptionMap["DisplayTokenStatEnabled"] = strconv.FormatBool(common.DisplayTokenStatEnabled)
 	common.OptionMap["DrawingEnabled"] = strconv.FormatBool(common.DrawingEnabled)
@@ -306,6 +320,12 @@ func updateOptionMap(key string, value string) (err error) {
 			common.AutomaticEnableChannelEnabled = boolValue
 		case "LogConsumeEnabled":
 			common.LogConsumeEnabled = boolValue
+		case "ErrorLogEnabled":
+			// 动态控制错误日志写库开关。
+			constant.ErrorLogEnabled = boolValue
+		case "ErrorWebhookAlertEnabled":
+			// 动态控制错误 webhook 告警开关。
+			setting.ErrorWebhookAlertEnabled = boolValue
 		case "DisplayInCurrencyEnabled":
 			// 兼容旧字段：同步到新配置 general_setting.quota_display_type（运行时生效）
 			// true -> USD, false -> TOKENS
@@ -514,6 +534,16 @@ func updateOptionMap(key string, value string) (err error) {
 		err = setting.UpdateModelRequestRateLimitGroupByJSONString(value)
 	case "RetryTimes":
 		common.RetryTimes, _ = strconv.Atoi(value)
+	case "TTFTTimeoutSeconds":
+		timeoutSeconds, parseErr := strconv.Atoi(value)
+		if parseErr != nil {
+			return parseErr
+		}
+		// 0 表示禁用；负数按 0 处理，避免异常配置导致不可预期行为。
+		if timeoutSeconds < 0 {
+			timeoutSeconds = 0
+		}
+		constant.TTFTTimeoutSeconds = timeoutSeconds
 	case "DataExportInterval":
 		common.DataExportInterval, _ = strconv.Atoi(value)
 	case "DataExportDefaultTime":
@@ -560,6 +590,12 @@ func updateOptionMap(key string, value string) (err error) {
 		err = operation_setting.AutomaticRetryStatusCodesFromString(value)
 	case "StreamCacheQueueLength":
 		setting.StreamCacheQueueLength, _ = strconv.Atoi(value)
+	case "ErrorWebhookAlertURL":
+		// 运行时热更新错误告警 webhook 地址。
+		setting.ErrorWebhookAlertURL = value
+	case "ErrorWebhookAlertSecret":
+		// 运行时热更新错误告警 webhook 签名密钥。
+		setting.ErrorWebhookAlertSecret = value
 	case "PayMethods":
 		err = operation_setting.UpdatePayMethodsByJsonString(value)
 	case "WaffoPayMethods":

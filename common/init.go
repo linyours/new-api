@@ -131,6 +131,14 @@ func InitEnv() {
 
 func initConstantEnv() {
 	constant.StreamingTimeout = GetEnvOrDefault("STREAMING_TIMEOUT", 300)
+	// ===================== BEGIN NEW: TTFT timeout env =====================
+	// TTFT_TIMEOUT_SECONDS controls max wait time before first valid stream
+	// chunk arrives. 0 disables this feature.
+	//
+	// Default is 120s to provide a safe upper bound for very slow first-token
+	// responses while keeping backward compatibility (configurable via env).
+	constant.TTFTTimeoutSeconds = GetEnvOrDefault("TTFT_TIMEOUT_SECONDS", 120)
+	// ====================== END NEW: TTFT timeout env ======================
 	constant.DifyDebug = GetEnvOrDefaultBool("DIFY_DEBUG", true)
 	constant.MaxFileDownloadMB = GetEnvOrDefault("MAX_FILE_DOWNLOAD_MB", 64)
 	constant.StreamScannerMaxBufferMB = GetEnvOrDefault("STREAM_SCANNER_MAX_BUFFER_MB", 128)

@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -220,6 +221,30 @@ func UpdateOption(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": "无效的主题值，可选值：default（新版前端）、classic（经典前端）",
+			})
+			return
+		}
+	case "ErrorWebhookAlertURL":
+		// 错误告警 webhook 地址可为空（表示仅关闭发送，不影响其他配置）。
+		// 非空时必须是合法的 http/https URL，避免写入无效地址导致运行时报错。
+		webhookURL := strings.TrimSpace(option.Value.(string))
+		if webhookURL == "" {
+			break
+		}
+		parsed, parseErr := url.ParseRequestURI(webhookURL)
+		if parseErr != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "ErrorWebhookAlertURL 必须是合法的 http/https 地址",
+			})
+			return
+		}
+	case "TTFTTimeoutSeconds":
+		ttftTimeoutSeconds, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || ttftTimeoutSeconds < 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "TTFTTimeoutSeconds 必须是大于等于 0 的整数",
 			})
 			return
 		}
