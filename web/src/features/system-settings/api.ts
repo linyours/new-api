@@ -20,13 +20,16 @@ import { api } from '@/lib/api'
 
 import type {
   ConfirmPaymentComplianceResponse,
+  DeleteGroupChannelFallbackRequest,
   FetchUpstreamRatiosRequest,
+  GroupChannelFallbackListResponse,
   LogCleanupTask,
   SystemOptionsResponse,
   SystemTaskListResponse,
   SystemTaskResponse,
   UpdateOptionRequest,
   UpdateOptionResponse,
+  UpsertGroupChannelFallbackRequest,
   UpstreamChannelsResponse,
   UpstreamRatiosResponse,
 } from './types'
@@ -102,6 +105,35 @@ export async function fetchUpstreamRatios(request: FetchUpstreamRatiosRequest) {
   const res = await api.post<UpstreamRatiosResponse>(
     '/api/ratio_sync/fetch',
     request
+  )
+  return res.data
+}
+
+export async function getGroupChannelFallbacks() {
+  const res = await api.get<GroupChannelFallbackListResponse>(
+    '/api/channel/group_fallback'
+  )
+  return res.data
+}
+
+export async function upsertGroupChannelFallback(
+  request: UpsertGroupChannelFallbackRequest
+) {
+  const res = await api.put<UpdateOptionResponse>(
+    '/api/channel/group_fallback',
+    request
+  )
+  return res.data
+}
+
+export async function deleteGroupChannelFallback(
+  request: DeleteGroupChannelFallbackRequest
+) {
+  const res = await api.delete<UpdateOptionResponse>(
+    '/api/channel/group_fallback',
+    {
+      data: request,
+    }
   )
   return res.data
 }

@@ -75,8 +75,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	//originalModel := common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
 
 	var (
-		newAPIError *types.NewAPIError
-		ws          *websocket.Conn
+		newAPIError      *types.NewAPIError
+		ws               *websocket.Conn
+		lastTriedChannel *model.Channel
+		retryExhausted   bool
 	)
 
 	if relayFormat == types.RelayFormatOpenAIRealtime {
@@ -199,6 +201,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = channelErr
 			break
 		}
+		lastTriedChannel = channel
+
 		addUsedChannel(c, channel.Id)
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
 			newAPIError = billingErr
@@ -253,8 +257,26 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 		}
 
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+		remainingRetry := common.RetryTimes - retryParam.GetRetry()
+		if !shouldRetry(c, newAPIError, remainingRetry) {
+			// 仅当“主重试额度耗尽”时，才允许触发分组兜底。
+			// 如果是中途因 skip-retry、固定渠道等原因提前退出，则不触发兜底，保持原有行为。
+			retryExhausted = remainingRetry <= 0
 			break
+		}
+	}
+
+	// 分组兜底：仅在主重试次数消耗完后，追加“一次”兜底请求。
+	// 该逻辑与主重试解耦，不会改变既有 shouldRetry 决策与重试链路。
+	if newAPIError != nil && retryExhausted {
+		handled, fallbackErr := tryGroupFallbackAfterRetryExhausted(c, relayInfo, relayFormat, retryParam, lastTriedChannel)
+		if handled {
+			if fallbackErr == nil {
+				// 兜底成功，直接按成功路径结束。
+				return
+			}
+			// 兜底也失败：以兜底错误作为最终错误返回给调用方。
+			newAPIError = fallbackErr
 		}
 	}
 
@@ -373,6 +395,120 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		return false
 	}
 	return operation_setting.ShouldRetryByStatusCode(code)
+}
+
+// tryGroupFallbackAfterRetryExhausted 在主重试耗尽后执行一次分组兜底请求。
+//
+// 关键约束：
+// 1) 不改主流程：该函数仅在主重试循环退出后调用；
+// 2) 只补一次：内部不会再触发 shouldRetry 循环；
+// 3) 指定渠道请求（specific_channel_id）不触发兜底，保持用户显式选渠语义；
+// 4) 仅在出现错误且有匹配规则时执行，正常流量无额外开销。
+func tryGroupFallbackAfterRetryExhausted(
+	c *gin.Context,
+	relayInfo *relaycommon.RelayInfo,
+	relayFormat types.RelayFormat,
+	retryParam *service.RetryParam,
+	lastChannel *model.Channel,
+) (handled bool, fallbackErr *types.NewAPIError) {
+	if c == nil || relayInfo == nil || retryParam == nil || lastChannel == nil {
+		return false, nil
+	}
+	if _, ok := c.Get("specific_channel_id"); ok {
+		return false, nil
+	}
+
+	lookupGroup := service.ResolveFallbackLookupGroup(c, retryParam)
+	if lookupGroup == "" {
+		return false, nil
+	}
+
+	fallbackChannel, resolveErr := service.ResolveGroupFallbackChannel(lookupGroup, lastChannel.Type)
+	if resolveErr != nil {
+		logger.LogWarn(c, fmt.Sprintf("resolve group fallback failed: group=%s, channel_type=%d, err=%v", lookupGroup, lastChannel.Type, resolveErr))
+		return false, nil
+	}
+	if fallbackChannel == nil {
+		return false, nil
+	}
+	if fallbackChannel.Id == lastChannel.Id {
+		// 防御配置错误：兜底渠道与最后失败渠道相同，没有任何收益，直接跳过。
+		logger.LogWarn(c, fmt.Sprintf("skip group fallback because fallback channel equals last tried channel: channel_id=%d", fallbackChannel.Id))
+		return false, nil
+	}
+
+	// 防御未知异常：兜底逻辑不应影响主请求稳定性，出现 panic 时转为可观测错误返回。
+	defer func() {
+		if r := recover(); r != nil {
+			handled = true
+			fallbackErr = types.NewErrorWithStatusCode(
+				fmt.Errorf("panic in group fallback relay: %v", r),
+				types.ErrorCodeBadResponse,
+				http.StatusInternalServerError,
+			)
+		}
+	}()
+
+	if setupErr := middleware.SetupContextForSelectedChannel(c, fallbackChannel, relayInfo.OriginModelName); setupErr != nil {
+		return true, setupErr
+	}
+	addUsedChannel(c, fallbackChannel.Id)
+
+	bodyStorage, bodyErr := common.GetBodyStorage(c)
+	if bodyErr != nil {
+		// 统一映射请求体异常，避免兜底路径返回行为与主流程不一致。
+		if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
+			return true, types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
+		}
+		return true, types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
+	c.Request.Body = io.NopCloser(bodyStorage)
+
+	// 将兜底尝试标记为“重试链末尾之后的一次尝试”，用于日志排查（非主重试循环）。
+	relayInfo.RetryIndex = common.RetryTimes + 1
+	relayInfo.LastError = nil
+
+	newAPIError := runRelayOnceWithCurrentContext(c, relayInfo, relayFormat)
+	if newAPIError == nil {
+		logger.LogInfo(c, fmt.Sprintf("group fallback succeeded: group=%s, channel_type=%d, fallback_channel_id=%d", lookupGroup, lastChannel.Type, fallbackChannel.Id))
+		relayInfo.LastError = nil
+		return true, nil
+	}
+
+	newAPIError = service.NormalizeViolationFeeError(newAPIError)
+	relayInfo.LastError = newAPIError
+
+	processChannelError(c,
+		*types.NewChannelError(
+			fallbackChannel.Id,
+			fallbackChannel.Type,
+			fallbackChannel.Name,
+			fallbackChannel.ChannelInfo.IsMultiKey,
+			common.GetContextKeyString(c, constant.ContextKeyChannelKey),
+			fallbackChannel.GetAutoBan(),
+		),
+		newAPIError,
+	)
+	logger.LogWarn(c, fmt.Sprintf(
+		"group fallback failed: group=%s, channel_type=%d, fallback_channel_id=%d, err=%s",
+		lookupGroup, lastChannel.Type, fallbackChannel.Id, common.LocalLogPreview(newAPIError.Error()),
+	))
+	return true, newAPIError
+}
+
+// runRelayOnceWithCurrentContext 复用当前上下文执行一次下游请求。
+// 仅用于“兜底的一次尝试”，不包含任何重试循环逻辑。
+func runRelayOnceWithCurrentContext(c *gin.Context, info *relaycommon.RelayInfo, relayFormat types.RelayFormat) *types.NewAPIError {
+	switch relayFormat {
+	case types.RelayFormatOpenAIRealtime:
+		return relay.WssHelper(c, info)
+	case types.RelayFormatClaude:
+		return relay.ClaudeHelper(c, info)
+	case types.RelayFormatGemini:
+		return geminiRelayHandler(c, info)
+	default:
+		return relayHandler(c, info)
+	}
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {

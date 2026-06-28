@@ -27,6 +27,7 @@ import {
   ListTodo,
   MessageSquare,
   Radio,
+  Route,
   ServerCog,
   Settings,
   Ticket,
@@ -143,6 +144,11 @@ export function useSidebarData(): SidebarData {
             title: t('Subscriptions'),
             url: '/subscriptions',
             icon: CreditCard,
+          },
+          {
+            title: t('Group fallback'),
+            url: '/group-fallback',
+            icon: Route,
           },
           {
             title: t('System Info'),

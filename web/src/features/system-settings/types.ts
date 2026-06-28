@@ -364,6 +364,37 @@ export type OperationsSettings = {
   'perf_metrics_setting.retention_days': number
 }
 
+export type GroupChannelFallbackItem = {
+  id: number
+  group_name: string
+  channel_type: number
+  fallback_channel_id: number
+  enabled: boolean
+  remark: string
+  created_time: number
+  updated_time: number
+}
+
+export type GroupChannelFallbackListResponse = {
+  success: boolean
+  message: string
+  data: GroupChannelFallbackItem[]
+}
+
+export type UpsertGroupChannelFallbackRequest = {
+  id?: number
+  group_name: string
+  channel_type: number
+  fallback_channel_id: number
+  enabled: boolean
+  remark: string
+}
+
+export type DeleteGroupChannelFallbackRequest = {
+  group_name: string
+  channel_type: number
+}
+
 export type SecuritySettings = {
   ModelRequestRateLimitEnabled: boolean
   ModelRequestRateLimitCount: number
