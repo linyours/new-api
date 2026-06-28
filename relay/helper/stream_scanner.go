@@ -12,8 +12,10 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
@@ -34,11 +36,85 @@ func getScannerBufferSize() int {
 	return DefaultMaxScannerBufferSize
 }
 
-func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string) bool) {
+func NewStreamScanner(reader io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, InitialScannerBufferSize), getScannerBufferSize())
+	return scanner
+}
+
+func sendTTFTImmediateWebhookAlert(c *gin.Context, info *relaycommon.RelayInfo, detail string) {
+	if c == nil || info == nil {
+		return
+	}
+
+	channelID := info.ChannelId
+	tokenID := info.TokenId
+	modelName := info.OriginModelName
+	if modelName == "" {
+		modelName = info.UpstreamModelName
+	}
+	requestID := info.RequestId
+	if requestID == "" {
+		requestID = c.GetString(common.RequestIdKey)
+	}
+	requestPath := "-"
+	if c.Request != nil && c.Request.URL != nil && c.Request.URL.Path != "" {
+		requestPath = c.Request.URL.Path
+	}
+	group := info.UsingGroup
+	if group == "" {
+		group = c.GetString("group")
+	}
+	tokenName := c.GetString("token_name")
+	alertTime := time.Now().Format("2006-01-02 15:04:05")
+
+	gopool.Go(func() {
+		cfg, err := service.GetTTFTMonitorConfig()
+		if err != nil || !cfg.Enabled || cfg.NotifyType != "webhook" || strings.TrimSpace(cfg.WebhookURL) == "" {
+			return
+		}
+
+		subject := fmt.Sprintf("【异常告警】通道 #%d TTFT 超阈值", channelID)
+		content := fmt.Sprintf(
+			"错误级别：严重\n"+
+				"告警类型：TTFT 即时告警\n"+
+				"模型信息：%s\n"+
+				"分组信息：%s\n"+
+				"渠道信息：channelId=%d, tokenId=%d, tokenName=%s\n"+
+				"请求路径：%s\n"+
+				"requestId：%s\n"+
+				"告警详情：%s\n"+
+				"告警时间：%s",
+			modelName,
+			group,
+			channelID,
+			tokenID,
+			tokenName,
+			requestPath,
+			requestID,
+			detail,
+			alertTime,
+		)
+		notify := dto.NewNotify(
+			fmt.Sprintf("%s_%d", dto.NotifyTypeTTFTAlert, channelID),
+			subject,
+			content,
+			nil,
+		)
+		if err = service.SendWebhookNotify(cfg.WebhookURL, cfg.WebhookSecret, notify); err != nil {
+			common.SysLog(fmt.Sprintf("ttft immediate webhook notify failed: %v", err))
+		}
+	})
+}
+
+func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) {
 
 	if resp == nil || dataHandler == nil {
 		return
 	}
+
+	// 无条件新建 StreamStatus
+	info.StreamStatus = relaycommon.NewStreamStatus()
 
 	// 确保响应体总是被关闭
 	defer func() {
@@ -48,15 +124,68 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}()
 
 	streamingTimeout := time.Duration(constant.StreamingTimeout) * time.Second
+	// ===================== BEGIN NEW: TTFT timeout config =====================
+	ttftTimeout := time.Duration(constant.TTFTTimeoutSeconds) * time.Second
+	// ====================== END NEW: TTFT timeout config ======================
 
 	var (
 		stopChan   = make(chan bool, 3) // 增加缓冲区避免阻塞
-		scanner    = bufio.NewScanner(resp.Body)
-		ticker     = time.NewTicker(streamingTimeout)
+		scanner    = NewStreamScanner(resp.Body)
+		ticker     *time.Ticker
 		pingTicker *time.Ticker
 		writeMutex sync.Mutex     // Mutex to protect concurrent writes
 		wg         sync.WaitGroup // 用于等待所有 goroutine 退出
+		// ===================== BEGIN NEW: TTFT timer runtime state =====================
+		ttftTimer     *time.Timer
+		ttftTimeoutCh <-chan time.Time
+		stopTTFTOnce  sync.Once
+		// ====================== END NEW: TTFT timer runtime state ======================
 	)
+
+	// ===================== BEGIN NEW: safe TTFT timer stop helper =====================
+	// Stop + drain to avoid timer channel leaks / stale trigger after stop.
+	stopTTFTTimer := func() {
+		stopTTFTOnce.Do(func() {
+			if ttftTimer == nil {
+				return
+			}
+			if !ttftTimer.Stop() {
+				select {
+				case <-ttftTimer.C:
+				default:
+				}
+			}
+		})
+	}
+	// ====================== END NEW: safe TTFT timer stop helper ======================
+
+	// ===================== BEGIN NEW: initialize TTFT timer =====================
+	// A nil channel never fires in select, so disabled mode has near-zero
+	// runtime overhead.
+	if constant.TTFTTimeoutSeconds > 0 && ttftTimeout > 0 {
+		startTime := info.StartTime
+		if startTime.IsZero() {
+			startTime = time.Now()
+		}
+		elapsed := time.Since(startTime)
+		remaining := ttftTimeout - elapsed
+		if remaining <= 0 {
+			sendTTFTImmediateWebhookAlert(
+				c,
+				info,
+				fmt.Sprintf(
+					"ttft timeout exceeded before scanner start (elapsed=%s, limit=%s)",
+					elapsed.Truncate(time.Millisecond),
+					ttftTimeout,
+				),
+			)
+		} else {
+			ttftTimer = time.NewTimer(remaining)
+			ttftTimeoutCh = ttftTimer.C
+		}
+	}
+	// ====================== END NEW: initialize TTFT timer ======================
+	ticker = time.NewTicker(streamingTimeout)
 
 	generalSettings := operation_setting.GetGeneralSetting()
 	pingEnabled := generalSettings.PingIntervalEnabled && !info.DisablePing
@@ -69,21 +198,24 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		pingTicker = time.NewTicker(pingInterval)
 	}
 
-	if common.DebugEnabled {
-		// print timeout and ping interval for debugging
-		println("relay timeout seconds:", common.RelayTimeout)
-		println("relay max idle conns:", common.RelayMaxIdleConns)
-		println("relay max idle conns per host:", common.RelayMaxIdleConnsPerHost)
-		println("streaming timeout seconds:", int64(streamingTimeout.Seconds()))
-		println("ping interval seconds:", int64(pingInterval.Seconds()))
-	}
+	logger.LogDebug(c, "relay timeout seconds: %d", common.RelayTimeout)
+	logger.LogDebug(c, "relay max idle conns: %d", common.RelayMaxIdleConns)
+	logger.LogDebug(c, "relay max idle conns per host: %d", common.RelayMaxIdleConnsPerHost)
+	logger.LogDebug(c, "streaming timeout seconds: %d", int64(streamingTimeout.Seconds()))
+	logger.LogDebug(c, "ttft timeout seconds: %d", int64(ttftTimeout.Seconds()))
+	logger.LogDebug(c, "ping interval seconds: %d", int64(pingInterval.Seconds()))
 
 	// 改进资源清理，确保所有 goroutine 正确退出
 	defer func() {
+		// ===================== BEGIN NEW: ensure TTFT timer cleanup =====================
+		stopTTFTTimer()
+		// ====================== END NEW: ensure TTFT timer cleanup ======================
 		// 通知所有 goroutine 停止
 		common.SafeSendBool(stopChan, true)
 
-		ticker.Stop()
+		if ticker != nil {
+			ticker.Stop()
+		}
 		if pingTicker != nil {
 			pingTicker.Stop()
 		}
@@ -104,7 +236,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		close(stopChan)
 	}()
 
-	scanner.Buffer(make([]byte, InitialScannerBufferSize), getScannerBufferSize())
 	scanner.Split(bufio.ScanLines)
 	SetEventStreamHeaders(c)
 
@@ -121,11 +252,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				wg.Done()
 				if r := recover(); r != nil {
 					logger.LogError(c, fmt.Sprintf("ping goroutine panic: %v", r))
+					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonPanic, fmt.Errorf("ping panic: %v", r))
 					common.SafeSendBool(stopChan, true)
 				}
-				if common.DebugEnabled {
-					println("ping goroutine exited")
-				}
+				logger.LogDebug(c, "ping goroutine exited")
 			}()
 
 			// 添加超时保护，防止 goroutine 无限运行
@@ -148,13 +278,13 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					case err := <-done:
 						if err != nil {
 							logger.LogError(c, "ping data error: "+err.Error())
+							info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonPingFail, err)
 							return
 						}
-						if common.DebugEnabled {
-							println("ping data sent")
-						}
+						logger.LogDebug(c, "ping data sent")
 					case <-time.After(10 * time.Second):
 						logger.LogError(c, "ping data send timeout")
+						info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonPingFail, fmt.Errorf("ping send timeout"))
 						return
 					case <-ctx.Done():
 						return
@@ -184,14 +314,17 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			wg.Done()
 			if r := recover(); r != nil {
 				logger.LogError(c, fmt.Sprintf("data handler goroutine panic: %v", r))
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonPanic, fmt.Errorf("handler panic: %v", r))
 			}
 			common.SafeSendBool(stopChan, true)
 		}()
+		sr := newStreamResult(info.StreamStatus)
 		for data := range dataChan {
+			sr.reset()
 			writeMutex.Lock()
-			success := dataHandler(data)
+			dataHandler(data, sr)
 			writeMutex.Unlock()
-			if !success {
+			if sr.IsStopped() {
 				return
 			}
 		}
@@ -205,11 +338,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			wg.Done()
 			if r := recover(); r != nil {
 				logger.LogError(c, fmt.Sprintf("scanner goroutine panic: %v", r))
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonPanic, fmt.Errorf("scanner panic: %v", r))
 			}
 			common.SafeSendBool(stopChan, true)
-			if common.DebugEnabled {
-				println("scanner goroutine exited")
-			}
+			logger.LogDebug(c, "scanner goroutine exited")
 		}()
 
 		for scanner.Scan() {
@@ -220,15 +352,14 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			case <-ctx.Done():
 				return
 			case <-c.Request.Context().Done():
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
 				return
 			default:
 			}
 
 			ticker.Reset(streamingTimeout)
 			data := scanner.Text()
-			if common.DebugEnabled {
-				println(data)
-			}
+			logger.LogDebug(c, "stream scanner data: %s", data)
 
 			if len(data) < 6 {
 				continue
@@ -242,6 +373,13 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				continue
 			}
 			if !strings.HasPrefix(data, "[DONE]") {
+				// ===================== BEGIN NEW: stop TTFT on first valid chunk =====================
+				// Use received count as first-chunk marker to avoid additional parsing
+				// cost on the hot path.
+				if info.ReceivedResponseCount == 0 {
+					stopTTFTTimer()
+				}
+				// ====================== END NEW: stop TTFT on first valid chunk ======================
 				info.SetFirstResponseTime()
 				info.ReceivedResponseCount++
 
@@ -253,31 +391,62 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					return
 				}
 			} else {
-				// done, 处理完成标志，直接退出停止读取剩余数据防止出错
-				if common.DebugEnabled {
-					println("received [DONE], stopping scanner")
-				}
+				// ===================== BEGIN NEW: stop TTFT on DONE =====================
+				stopTTFTTimer()
+				// ====================== END NEW: stop TTFT on DONE ======================
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+				logger.LogDebug(c, "received [DONE], stopping scanner")
 				return
 			}
 		}
 
+		// ===================== BEGIN NEW: stop TTFT on scanner exit =====================
+		stopTTFTTimer()
+		// ====================== END NEW: stop TTFT on scanner exit ======================
+
 		if err := scanner.Err(); err != nil {
 			if err != io.EOF {
 				logger.LogError(c, "scanner error: "+err.Error())
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
 			}
 		}
+		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
 	})
 
 	// 主循环等待完成或超时
+	waitForStreamEnd := false
 	select {
 	case <-ticker.C:
-		// 超时处理逻辑
-		logger.LogError(c, "streaming timeout")
+		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, nil)
+	// ===================== BEGIN NEW: TTFT timeout branch =====================
+	case <-ttftTimeoutCh:
+		sendTTFTImmediateWebhookAlert(
+			c,
+			info,
+			fmt.Sprintf("ttft timeout: no first chunk within %d seconds", constant.TTFTTimeoutSeconds),
+		)
+		ttftTimeoutCh = nil
+		waitForStreamEnd = true
+	// ====================== END NEW: TTFT timeout branch ======================
 	case <-stopChan:
-		// 正常结束
-		logger.LogInfo(c, "streaming finished")
+		// EndReason already set by the goroutine that triggered stopChan
 	case <-c.Request.Context().Done():
-		// 客户端断开连接
-		logger.LogInfo(c, "client disconnected")
+		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+	}
+	if waitForStreamEnd {
+		select {
+		case <-stopChan:
+			// EndReason already set by the goroutine that triggered stopChan
+		case <-ticker.C:
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, nil)
+		case <-c.Request.Context().Done():
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+		}
+	}
+
+	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
+		logger.LogInfo(c, fmt.Sprintf("stream ended: %s", info.StreamStatus.Summary()))
+	} else {
+		logger.LogError(c, fmt.Sprintf("stream ended: %s, received=%d", info.StreamStatus.Summary(), info.ReceivedResponseCount))
 	}
 }

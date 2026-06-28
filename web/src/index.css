@@ -32,8 +32,37 @@ body {
 }
 
 .app-layout {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.app-layout-fixed {
   height: 100vh;
   height: 100dvh;
+}
+
+.public-page-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.classic-page-fill {
+  flex: 1 0 auto;
+  min-height: 100%;
+}
+
+.classic-home-page,
+.classic-home-default {
+  display: flex;
+  flex-direction: column;
+}
+
+.classic-home-default {
+  flex: 1 0 auto;
+}
+
+.classic-home-hero {
+  flex: 1 0 auto;
 }
 
 .app-sider {
@@ -469,6 +498,9 @@ html.dark .sbg-variant-green {
 .custom-footer {
   font-size: 1.1em;
 }
+.custom-footer.na-cb6feafeb3990c78 {
+  position: relative;
+}
 
 /* 卡片内容容器通用样式 */
 .card-content-container {
@@ -865,6 +897,24 @@ html.dark .with-pastel-balls::before {
     height: calc(100vh - 77px);
     max-height: calc(100vh - 77px);
   }
+
+  .semi-input-suffix-text {
+    font-size: 11px;
+    padding: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 80px;
+  }
+
+  .semi-input-prefix-text, .semi-input-suffix-text {
+    margin: 0;
+  }
+
+  .semi-select-arrow {
+    margin-left: 2px;
+    margin-right: 2px;
+  }
 }
 
 /* ==================== 模型定价页面布局 ==================== */
@@ -971,3 +1021,28 @@ html.dark .with-pastel-balls::before {
 .semi-datepicker-range-input {
   border-radius: 10px !important;
 }
+
+@keyframes slideInLeft {
+  from {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Channel advanced settings side panel animations */
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.ec-dbcd0a3c01b55203 { forced-color-adjust: auto; }

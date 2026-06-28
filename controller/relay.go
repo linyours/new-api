@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -26,7 +27,6 @@ import (
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/samber/lo"
-	"github.com/shopspring/decimal"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -88,7 +88,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	defer func() {
 		if newAPIError != nil {
-			logger.LogError(c, fmt.Sprintf("relay error: %s", newAPIError.Error()))
+			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
@@ -152,7 +152,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	priceData, err := helper.ModelPriceHelper(c, relayInfo, tokens, meta)
 	if err != nil {
-		newAPIError = types.NewError(err, types.ErrorCodeModelPriceError)
+		newAPIError = types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
 		return
 	}
 
@@ -230,6 +230,21 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
+		// 亲和渠道在上游返回 429 时，立即清理当前请求绑定的亲和缓存键。
+		// 设计目的：
+		// 1) 避免后续重试/后续新请求继续粘在同一个已限流渠道；
+		// 2) 让重试回落到常规选渠（按优先级+权重）；
+		// 3) ClearCurrentChannelAffinityCache 内部会把 skip-retry 标记复位为 false，
+		//    避免被“亲和失败后跳过重试”规则短路。
+		// 安全性说明：
+		// - 若本请求未命中亲和键，函数会无副作用返回 false；
+		// - 若命中亲和键，删除的是“当前请求上下文对应”的那一条键，不会清空全部缓存。
+		if newAPIError.StatusCode == http.StatusTooManyRequests {
+			if deleted := service.ClearCurrentChannelAffinityCache(c); deleted {
+				logger.LogInfo(c, fmt.Sprintf("渠道亲和缓存已清理（触发条件：429，retry=%d，channel_id=%d）", retryParam.GetRetry(), channel.Id))
+			}
+		}
+
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
@@ -239,6 +254,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	if len(useChannel) > 1 {
 		retryLogStr := fmt.Sprintf("重试：%s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))
 		logger.LogInfo(c, retryLogStr)
+	}
+	if newAPIError != nil {
+		gopool.Go(func() {
+			perfmetrics.RecordRelaySample(relayInfo, false, 0)
+		})
 	}
 }
 
@@ -349,10 +369,10 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {
-	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, err.Error()))
+	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
-	if service.ShouldDisableChannel(channelError.ChannelType, err) && channelError.AutoBan {
+	if service.ShouldDisableChannel(err) && channelError.AutoBan {
 		gopool.Go(func() {
 			service.DisableChannel(channelError, err.ErrorWithStatusCode())
 		})
@@ -390,7 +410,53 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 			startTime = time.Now()
 		}
 		useTimeSeconds := int(time.Since(startTime).Seconds())
-		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, false, userGroup, other)
+		// 错误日志内容统一走脱敏版本，避免在日志中泄露上游敏感信息。
+		model.RecordErrorLog(c, userId, channelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
+	}
+
+	// 错误飞书告警与错误日志写库完全解耦：
+	// - 这里不依赖 constant.ErrorLogEnabled；
+	// - 只要业务错误允许记录（types.IsRecordErrorLog）且告警服务开关打开，就会发送告警。
+	if types.IsRecordErrorLog(err) {
+		userId := c.GetInt("id")
+		tokenName := c.GetString("token_name")
+		modelName := c.GetString("original_model")
+		userGroup := c.GetString("group")
+		channelId := c.GetInt("channel_id")
+		requestPath := ""
+		if c.Request != nil && c.Request.URL != nil {
+			requestPath = c.Request.URL.Path
+		}
+		startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+		if startTime.IsZero() {
+			startTime = time.Now()
+		}
+		useTimeSeconds := int(time.Since(startTime).Seconds())
+
+		// 先组装快照，再异步发送，避免在 goroutine 里读取 context 造成不一致。
+		alertPayload := service.ErrorLogAlertPayload{
+			UserID:            userId,
+			Username:          c.GetString("username"),
+			Group:             userGroup,
+			ModelName:         modelName,
+			TokenName:         tokenName,
+			ChannelID:         channelId,
+			ChannelName:       c.GetString("channel_name"),
+			ChannelType:       c.GetInt("channel_type"),
+			StatusCode:        err.StatusCode,
+			ErrorCode:         string(err.GetErrorCode()),
+			ErrorType:         string(err.GetErrorType()),
+			ErrorMessage:      err.MaskSensitiveErrorWithStatusCode(),
+			RequestPath:       requestPath,
+			RequestID:         c.GetString(common.RequestIdKey),
+			UpstreamRequestID: c.GetString(common.UpstreamRequestIdKey),
+			UseTimeSeconds:    useTimeSeconds,
+			IsStream:          common.GetContextKeyBool(c, constant.ContextKeyIsStream),
+			RetryChain:        c.GetStringSlice("use_channel"),
+		}
+		gopool.Go(func() {
+			service.HandleErrorLogWebhookAlert(alertPayload)
+		})
 	}
 
 }
@@ -553,6 +619,15 @@ func RelayTask(c *gin.Context) {
 				types.NewOpenAIError(taskErr.Error, types.ErrorCodeBadResponseStatusCode, taskErr.StatusCode))
 		}
 
+		// Task 链路与普通 Relay 保持一致：
+		// 一旦当前渠道返回 429，若当前请求存在亲和缓存键则立即清理，
+		// 使后续重试可重新按渠道优先级与权重选路，避免持续命中限流渠道。
+		if taskErr.StatusCode == http.StatusTooManyRequests {
+			if deleted := service.ClearCurrentChannelAffinityCache(c); deleted {
+				logger.LogInfo(c, fmt.Sprintf("任务链路渠道亲和缓存已清理（触发条件：429，retry=%d，channel_id=%d）", retryParam.GetRetry(), channel.Id))
+			}
+		}
+
 		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
@@ -566,13 +641,10 @@ func RelayTask(c *gin.Context) {
 
 	// ── 成功：结算 + 日志 + 插入任务 ──
 	if taskErr == nil {
-		preQ := result.Quota
-		billed, mult := service.MjPerCallQuotaAfterUserDiscount(c.GetString("username"), relayInfo.UsingGroup, relayInfo.OriginModelName, preQ)
-		service.ResolveAgentActualQuotaByPlatformDiscount(relayInfo, c.GetString("username"), decimal.NewFromInt(int64(preQ)), billed)
-		if settleErr := service.SettleBilling(c, relayInfo, billed); settleErr != nil {
+		if settleErr := service.SettleBilling(c, relayInfo, result.Quota); settleErr != nil {
 			common.SysError("settle task billing error: " + settleErr.Error())
 		}
-		service.LogTaskConsumption(c, relayInfo, preQ, billed, mult)
+		service.LogTaskConsumption(c, relayInfo)
 
 		task := model.InitTask(result.Platform, relayInfo)
 		task.PrivateData.UpstreamTaskID = result.UpstreamTaskID
@@ -585,9 +657,9 @@ func RelayTask(c *gin.Context) {
 			ModelRatio:      relayInfo.PriceData.ModelRatio,
 			OtherRatios:     relayInfo.PriceData.OtherRatios,
 			OriginModelName: relayInfo.OriginModelName,
-			PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName),
+			PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
 		}
-		task.Quota = billed
+		task.Quota = result.Quota
 		task.Data = result.TaskData
 		task.Action = relayInfo.Action
 		if insertErr := task.Insert(); insertErr != nil {

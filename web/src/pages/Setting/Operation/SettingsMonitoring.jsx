@@ -54,7 +54,7 @@ export default function SettingsMonitoring(props) {
     inputs.AutomaticRetryStatusCodes || '',
   );
 
-  function onSubmit() {
+  async function onSubmit() {
     const updateArray = compareObjects(inputs, inputsRow);
     if (!updateArray.length) return showWarning(t('你似乎并没有修改什么'));
     if (!parsedAutoDisableStatusCodes.ok) {
@@ -90,23 +90,15 @@ export default function SettingsMonitoring(props) {
       });
     });
     setLoading(true);
-    Promise.all(requestQueue)
-      .then((res) => {
-        if (requestQueue.length === 1) {
-          if (res.includes(undefined)) return;
-        } else if (requestQueue.length > 1) {
-          if (res.includes(undefined))
-            return showError(t('部分保存失败，请重试'));
-        }
-        showSuccess(t('保存成功'));
-        props.refresh();
-      })
-      .catch(() => {
-        showError(t('保存失败，请重试'));
-      })
-      .finally(() => {
-        setLoading(false);
-      });
+    try {
+      await Promise.all(requestQueue);
+      showSuccess(t('保存成功'));
+      await props.refresh();
+    } catch (error) {
+      showError(t('保存失败，请重试'));
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {

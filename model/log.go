@@ -27,8 +27,9 @@ type Log struct {
 	TokenName        string `json:"token_name" gorm:"index;default:''"`
 	ModelName        string `json:"model_name" gorm:"index;index:index_username_model_name,priority:1;default:''"`
 	Quota            int    `json:"quota" gorm:"default:0"`
-	PromptTokens     int    `json:"prompt_tokens" gorm:"default:0"`
-	CompletionTokens int    `json:"completion_tokens" gorm:"default:0"`
+	PromptTokens        int `json:"prompt_tokens" gorm:"default:0"`
+	CacheCreationTokens int `json:"cache_creation_tokens" gorm:"default:0"`
+	CompletionTokens    int `json:"completion_tokens" gorm:"default:0"`
 	UseTime          int    `json:"use_time" gorm:"default:0"`
 	IsStream         bool   `json:"is_stream"`
 	ChannelId        int    `json:"channel" gorm:"index"`
@@ -135,9 +136,10 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 }
 
 type RecordConsumeLogParams struct {
-	ChannelId        int                    `json:"channel_id"`
-	PromptTokens     int                    `json:"prompt_tokens"`
-	CompletionTokens int                    `json:"completion_tokens"`
+	ChannelId           int                    `json:"channel_id"`
+	PromptTokens        int                    `json:"prompt_tokens"`
+	CacheCreationTokens int                    `json:"cache_creation_tokens"`
+	CompletionTokens    int                    `json:"completion_tokens"`
 	ModelName        string                 `json:"model_name"`
 	TokenName        string                 `json:"token_name"`
 	Quota            int                    `json:"quota"`
@@ -146,7 +148,34 @@ type RecordConsumeLogParams struct {
 	UseTimeSeconds   int                    `json:"use_time_seconds"`
 	IsStream         bool                   `json:"is_stream"`
 	Group            string                 `json:"group"`
-	Other            map[string]interface{} `json:"other"`
+	Other map[string]interface{} `json:"other"`
+}
+
+// OnConsumeLogRecorded is an optional async callback invoked after consume log persistence.
+// It is wired by main/service to avoid introducing model -> service import cycles.
+var OnConsumeLogRecorded func(log *Log, userId int, params RecordConsumeLogParams)
+
+// LoggedITPM returns Anthropic-aligned input tokens for rate-limit style stats:
+// input_tokens + cache_creation_input_tokens (excludes cache read and output tokens).
+func LoggedITPM(promptTokens, cacheCreationTokens int) int {
+	if promptTokens < 0 {
+		promptTokens = 0
+	}
+	if cacheCreationTokens < 0 {
+		cacheCreationTokens = 0
+	}
+	return promptTokens + cacheCreationTokens
+}
+
+func (p RecordConsumeLogParams) LoggedITPM() int {
+	return LoggedITPM(p.PromptTokens, p.CacheCreationTokens)
+}
+
+func logITPMSumSelectExpr() string {
+	if common.UsingPostgreSQL {
+		return "coalesce(sum(prompt_tokens),0) + coalesce(sum(cache_creation_tokens),0)"
+	}
+	return "ifnull(sum(prompt_tokens),0) + ifnull(sum(cache_creation_tokens),0)"
 }
 
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
@@ -170,9 +199,10 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		CreatedAt:        common.GetTimestamp(),
 		Type:             LogTypeConsume,
 		Content:          params.Content,
-		PromptTokens:     params.PromptTokens,
-		CompletionTokens: params.CompletionTokens,
-		TokenName:        params.TokenName,
+		PromptTokens:        params.PromptTokens,
+		CacheCreationTokens: params.CacheCreationTokens,
+		CompletionTokens:    params.CompletionTokens,
+		TokenName:           params.TokenName,
 		ModelName:        params.ModelName,
 		Quota:            params.Quota,
 		ChannelId:        params.ChannelId,
@@ -192,6 +222,14 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	err := LOG_DB.Create(log).Error
 	if err != nil {
 		logger.LogError(c, "failed to record log: "+err.Error())
+		return
+	}
+	if OnConsumeLogRecorded != nil {
+		logCopy := *log
+		paramsCopy := params
+		gopool.Go(func() {
+			OnConsumeLogRecorded(&logCopy, userId, paramsCopy)
+		})
 	}
 	if common.DataExportEnabled {
 		gopool.Go(func() {
@@ -437,8 +475,8 @@ type Stat struct {
 func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
 	tx := LOG_DB.Table("logs").Select("sum(quota) quota")
 
-	// 为rpm和tpm创建单独的查询
-	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, sum(prompt_tokens) + sum(completion_tokens) tpm")
+	// RPM: requests in the last 60s. TPM: Anthropic ITPM (input_tokens + cache_creation_input_tokens).
+	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, " + logITPMSumSelectExpr() + " tpm")
 
 	if username != "" {
 		tx = tx.Where("username = ?", username)
