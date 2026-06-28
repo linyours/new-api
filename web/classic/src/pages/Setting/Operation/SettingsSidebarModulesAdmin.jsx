@@ -66,6 +66,7 @@ export default function SettingsSidebarModulesAdmin(props) {
       redemption: true,
       user: true,
       subscription: true,
+      group_fallback: true,
       setting: true,
     },
   });
@@ -127,6 +128,7 @@ export default function SettingsSidebarModulesAdmin(props) {
         redemption: true,
         user: true,
         subscription: true,
+        group_fallback: true,
         setting: true,
       },
     };
@@ -174,7 +176,26 @@ export default function SettingsSidebarModulesAdmin(props) {
     if (props.options && props.options.SidebarModulesAdmin) {
       try {
         const modules = JSON.parse(props.options.SidebarModulesAdmin);
-        setSidebarModulesAdmin(modules);
+        setSidebarModulesAdmin((prev) => ({
+          ...prev,
+          ...modules,
+          chat: {
+            ...prev.chat,
+            ...(modules.chat || {}),
+          },
+          console: {
+            ...prev.console,
+            ...(modules.console || {}),
+          },
+          personal: {
+            ...prev.personal,
+            ...(modules.personal || {}),
+          },
+          admin: {
+            ...prev.admin,
+            ...(modules.admin || {}),
+          },
+        }));
       } catch (error) {
         // 使用默认配置
         const defaultModules = {
@@ -196,6 +217,7 @@ export default function SettingsSidebarModulesAdmin(props) {
             redemption: true,
             user: true,
             subscription: true,
+            group_fallback: true,
             setting: true,
           },
         };
@@ -264,6 +286,11 @@ export default function SettingsSidebarModulesAdmin(props) {
           key: 'subscription',
           title: t('订阅管理'),
           description: t('订阅套餐管理'),
+        },
+        {
+          key: 'group_fallback',
+          title: t('分组渠道兜底'),
+          description: t('配置分组失败兜底渠道'),
         },
         {
           key: 'redemption',

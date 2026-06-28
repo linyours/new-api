@@ -52,6 +52,7 @@ export const DEFAULT_ADMIN_CONFIG = {
     redemption: true,
     user: true,
     subscription: true,
+    group_fallback: true,
     setting: true,
   },
 };

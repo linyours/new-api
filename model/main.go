@@ -257,6 +257,7 @@ func migrateDB() error {
 
 	err := DB.AutoMigrate(
 		&Channel{},
+		&GroupChannelFallback{},
 		&Token{},
 		&User{},
 		&PasskeyCredential{},
@@ -306,6 +307,7 @@ func migrateDBFast() error {
 		name  string
 	}{
 		{&Channel{}, "Channel"},
+		{&GroupChannelFallback{}, "GroupChannelFallback"},
 		{&Token{}, "Token"},
 		{&User{}, "User"},
 		{&PasskeyCredential{}, "PasskeyCredential"},

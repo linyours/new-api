@@ -38,6 +38,7 @@ const routerMap = {
   topup: '/console/topup',
   user: '/console/user',
   subscription: '/console/subscription',
+  group_fallback: '/console/group-fallback',
   log: '/console/log',
   midjourney: '/console/midjourney',
   setting: '/console/setting',
@@ -181,6 +182,12 @@ const SiderBar = ({ onNavigate = () => {} }) => {
         text: t('用户管理'),
         itemKey: 'user',
         to: '/user',
+        className: isAdmin() ? '' : 'tableHiddle',
+      },
+      {
+        text: t('分组渠道兜底'),
+        itemKey: 'group_fallback',
+        to: '/group-fallback',
         className: isAdmin() ? '' : 'tableHiddle',
       },
       {

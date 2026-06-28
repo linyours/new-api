@@ -150,6 +150,10 @@ export function SidebarModulesSection({
         title: t('Subscription Management'),
         description: t('Manage subscription plans and pricing.'),
       },
+      group_fallback: {
+        title: t('Group fallback'),
+        description: t('Manage per-group fallback channel routing rules.'),
+      },
     },
   }
   const formDefaults = useMemo(() => config, [config])
