@@ -607,7 +607,6 @@ export const useDashboardCharts = (
     [dataExportDefaultTime, t],
   );
 
-  // ========== 初始化图表主题 ==========
   useEffect(() => {
     initVChartSemiTheme({
       isWatchingThemeSwitch: true,

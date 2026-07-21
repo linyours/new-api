@@ -364,7 +364,7 @@ func (p RecordConsumeLogParams) LoggedITPM() int {
 }
 
 func logITPMSumSelectExpr() string {
-	if common.UsingPostgreSQL {
+	if common.UsingLogDatabase(common.DatabaseTypePostgreSQL) {
 		return "coalesce(sum(prompt_tokens),0) + coalesce(sum(cache_creation_tokens),0)"
 	}
 	return "ifnull(sum(prompt_tokens),0) + ifnull(sum(cache_creation_tokens),0)"
