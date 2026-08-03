@@ -42,6 +42,7 @@ import {
   FormControl,
   FormDescription,
   FormField,
+  FormItem,
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
@@ -80,12 +81,15 @@ import type { LogCleanupTask } from '../types'
 
 const logSettingsSchema = z.object({
   LogConsumeEnabled: z.boolean(),
+  ErrorWebhookAlertEnabled: z.boolean(),
+  ErrorWebhookAlertURL: z.string(),
+  ErrorWebhookAlertSecret: z.string(),
 })
 
 type LogSettingsFormValues = z.infer<typeof logSettingsSchema>
 
 type LogSettingsSectionProps = {
-  defaultEnabled: boolean
+  defaultValues: LogSettingsFormValues
 }
 
 type ServerLogInfo = {
@@ -140,15 +144,13 @@ function isActiveLogCleanupTask(task: LogCleanupTask | null) {
 }
 
 export function LogSettingsSection({
-  defaultEnabled,
+  defaultValues,
 }: LogSettingsSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
   const form = useForm<LogSettingsFormValues>({
     resolver: zodResolver(logSettingsSchema),
-    defaultValues: {
-      LogConsumeEnabled: defaultEnabled,
-    },
+    defaultValues,
   })
 
   const [purgeDate, setPurgeDate] = useState<Date | undefined>(() =>
@@ -174,8 +176,8 @@ export function LogSettingsSection({
   }, [])
 
   useEffect(() => {
-    form.reset({ LogConsumeEnabled: defaultEnabled })
-  }, [defaultEnabled, form])
+    form.reset(defaultValues)
+  }, [defaultValues, form])
 
   useEffect(() => {
     fetchServerLogInfo()
@@ -257,11 +259,21 @@ export function LogSettingsSection({
   }, [logCleanupActive, logCleanupTaskId, t])
 
   const onSubmit = async (values: LogSettingsFormValues) => {
-    if (values.LogConsumeEnabled === defaultEnabled) return
-    await updateOption.mutateAsync({
-      key: 'LogConsumeEnabled',
-      value: values.LogConsumeEnabled,
-    })
+    const updates = (
+      Object.keys(values) as Array<keyof LogSettingsFormValues>
+    ).filter((key) => values[key] !== defaultValues[key])
+
+    if (updates.length === 0) {
+      toast.info(t('No changes to save'))
+      return
+    }
+
+    for (const key of updates) {
+      await updateOption.mutateAsync({
+        key,
+        value: values[key],
+      })
+    }
   }
 
   const handleRequestCleanLogs = () => {
@@ -366,6 +378,70 @@ export function LogSettingsSection({
               </SettingsSwitchItem>
             )}
           />
+
+          <FormField
+            control={form.control}
+            name='ErrorWebhookAlertEnabled'
+            render={({ field }) => (
+              <SettingsSwitchItem>
+                <SettingsSwitchContent>
+                  <FormLabel>
+                    {t('Enable channel error webhook alerts')}
+                  </FormLabel>
+                  <FormDescription>
+                    {t(
+                      'Send a webhook when a channel reports an error. Independent of quota usage logging.'
+                    )}
+                  </FormDescription>
+                </SettingsSwitchContent>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+                <FormMessage />
+              </SettingsSwitchItem>
+            )}
+          />
+
+          <div className='grid gap-4 md:grid-cols-2'>
+            <FormField
+              control={form.control}
+              name='ErrorWebhookAlertURL'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Error alert webhook URL')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder='https://open.feishu.cn/open-apis/bot/v2/hook/xxxx'
+                      value={field.value}
+                      onChange={field.onChange}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='ErrorWebhookAlertSecret'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Error alert webhook secret')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='password'
+                      placeholder={t('Optional, used for signing')}
+                      value={field.value}
+                      onChange={field.onChange}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
 
           <SettingsControlGroup className='space-y-3'>
             <div>

@@ -19,6 +19,8 @@ For commercial licensing, please contact support@quantumnous.com
 import { api } from '@/lib/api'
 
 import type {
+  ChannelDisableMonitorConfig,
+  ChannelDisableMonitorConfigResponse,
   ConfirmPaymentComplianceResponse,
   DeleteGroupChannelFallbackRequest,
   FetchUpstreamRatiosRequest,
@@ -27,6 +29,8 @@ import type {
   SystemOptionsResponse,
   SystemTaskListResponse,
   SystemTaskResponse,
+  TTFTMonitorConfig,
+  TTFTMonitorConfigResponse,
   UpdateOptionRequest,
   UpdateOptionResponse,
   UpsertGroupChannelFallbackRequest,
@@ -104,6 +108,38 @@ export async function getUpstreamChannels() {
 export async function fetchUpstreamRatios(request: FetchUpstreamRatiosRequest) {
   const res = await api.post<UpstreamRatiosResponse>(
     '/api/ratio_sync/fetch',
+    request
+  )
+  return res.data
+}
+
+export async function getTTFTMonitorConfig() {
+  const res = await api.get<TTFTMonitorConfigResponse>(
+    '/api/monitor/ttft/config'
+  )
+  return res.data
+}
+
+export async function updateTTFTMonitorConfig(request: TTFTMonitorConfig) {
+  const res = await api.put<UpdateOptionResponse>(
+    '/api/monitor/ttft/config',
+    request
+  )
+  return res.data
+}
+
+export async function getChannelDisableMonitorConfig() {
+  const res = await api.get<ChannelDisableMonitorConfigResponse>(
+    '/api/monitor/channel_disable/config'
+  )
+  return res.data
+}
+
+export async function updateChannelDisableMonitorConfig(
+  request: ChannelDisableMonitorConfig
+) {
+  const res = await api.put<UpdateOptionResponse>(
+    '/api/monitor/channel_disable/config',
     request
   )
   return res.data

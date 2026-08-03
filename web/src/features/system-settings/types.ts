@@ -350,6 +350,10 @@ export type OperationsSettings = {
   WorkerValidKey: string
   WorkerAllowHttpImageRequestEnabled: boolean
   LogConsumeEnabled: boolean
+  ErrorWebhookAlertEnabled: boolean
+  ErrorWebhookAlertURL: string
+  ErrorWebhookAlertSecret: string
+  TTFTTimeoutSeconds: number
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number
   'performance_setting.disk_cache_max_size_mb': number
@@ -362,6 +366,39 @@ export type OperationsSettings = {
   'perf_metrics_setting.flush_interval': number
   'perf_metrics_setting.bucket_time': 'hour' | 'minute' | '5min'
   'perf_metrics_setting.retention_days': number
+}
+
+export type MonitorNotifyType = 'root_notify' | 'webhook'
+
+export type TTFTMonitorConfig = {
+  enabled: boolean
+  channel_ids: number[]
+  threshold_seconds: number
+  window_seconds: number
+  count_threshold: number
+  cooldown_seconds: number
+  notify_type: MonitorNotifyType
+  webhook_url?: string
+  webhook_secret?: string
+}
+
+export type TTFTMonitorConfigResponse = {
+  success: boolean
+  message: string
+  data: TTFTMonitorConfig
+}
+
+export type ChannelDisableMonitorConfig = {
+  enabled: boolean
+  notify_type: MonitorNotifyType
+  webhook_url?: string
+  webhook_secret?: string
+}
+
+export type ChannelDisableMonitorConfigResponse = {
+  success: boolean
+  message: string
+  data: ChannelDisableMonitorConfig
 }
 
 export type GroupChannelFallbackItem = {
