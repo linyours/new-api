@@ -24,8 +24,8 @@ import { toast } from 'sonner'
 
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-import { FormLabel } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
@@ -161,7 +161,7 @@ export function ChannelDisableMonitoringSection() {
           <div className='grid gap-4 md:grid-cols-2'>
             <SettingsSwitchItem>
               <SettingsSwitchContent>
-                <FormLabel>{t('Enable channel auto-disable alerts')}</FormLabel>
+                <Label>{t('Enable channel auto-disable alerts')}</Label>
               </SettingsSwitchContent>
               <Switch
                 checked={form.enabled}
@@ -172,7 +172,7 @@ export function ChannelDisableMonitoringSection() {
             </SettingsSwitchItem>
 
             <div className='grid gap-1.5'>
-              <FormLabel>{t('Alert method')}</FormLabel>
+              <Label>{t('Alert method')}</Label>
               <Select
                 items={[
                   {
@@ -205,7 +205,7 @@ export function ChannelDisableMonitoringSection() {
           {form.notify_type === 'webhook' ? (
             <div className='grid gap-4 md:grid-cols-2'>
               <div className='grid gap-1.5'>
-                <FormLabel>{t('Webhook URL')}</FormLabel>
+                <Label>{t('Webhook URL')}</Label>
                 <Input
                   value={form.webhook_url}
                   placeholder='https://example.com/webhook'
@@ -218,7 +218,7 @@ export function ChannelDisableMonitoringSection() {
                 />
               </div>
               <div className='grid gap-1.5'>
-                <FormLabel>{t('Webhook secret')}</FormLabel>
+                <Label>{t('Webhook secret')}</Label>
                 <Input
                   type='password'
                   value={form.webhook_secret}

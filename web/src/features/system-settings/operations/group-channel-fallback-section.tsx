@@ -19,8 +19,9 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Loader2, Trash2 } from 'lucide-react'
+import { Loader2, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -72,7 +73,7 @@ export function GroupChannelFallbackSection() {
   const [form, setForm] = useState(DEFAULT_FORM)
   const [submitting, setSubmitting] = useState(false)
   const [deletingKey, setDeletingKey] = useState('')
-  const [editingKey, setEditingKey] = useState('')
+  const [dialogOpen, setDialogOpen] = useState(false)
   const [editingId, setEditingId] = useState(0)
 
   const groupsQuery = useQuery({
@@ -129,6 +130,7 @@ export function GroupChannelFallbackSection() {
         label: `${channel.name} (${String(channel.group || '').trim() || '-'})`,
       }))
   }, [channels, form.channel_type])
+
   const channelDisplayMap = useMemo(() => {
     const map = new Map<number, string>()
     for (const channel of channels) {
@@ -143,10 +145,29 @@ export function GroupChannelFallbackSection() {
   const isLoadingAny =
     groupsQuery.isLoading || channelsQuery.isLoading || fallbackListQuery.isLoading
 
+  const isEditing = editingId > 0
+
   const onReset = () => {
     setForm(DEFAULT_FORM)
-    setEditingKey('')
     setEditingId(0)
+  }
+
+  const openCreateDialog = () => {
+    onReset()
+    setDialogOpen(true)
+  }
+
+  const closeDialog = () => {
+    setDialogOpen(false)
+    onReset()
+  }
+
+  const onDialogOpenChange = (open: boolean) => {
+    if (!open) {
+      closeDialog()
+      return
+    }
+    setDialogOpen(true)
   }
 
   const onEdit = (item: GroupChannelFallbackItem) => {
@@ -158,8 +179,8 @@ export function GroupChannelFallbackSection() {
       enabled: item.enabled,
       remark: item.remark || '',
     })
-    setEditingKey(`${item.group_name}#${item.channel_type}`)
     setEditingId(item.id)
+    setDialogOpen(true)
   }
 
   const onSubmit = async () => {
@@ -194,7 +215,7 @@ export function GroupChannelFallbackSection() {
         throw new Error(res.message || t('Failed to save setting'))
       }
       toast.success(t('Saved successfully'))
-      onReset()
+      closeDialog()
       await fallbackListQuery.refetch()
     } catch (error) {
       const message =
@@ -228,7 +249,6 @@ export function GroupChannelFallbackSection() {
   }
 
   const onToggle = async (item: GroupChannelFallbackItem, enabled: boolean) => {
-    const key = `${item.group_name}#${item.channel_type}`
     setSubmitting(true)
     try {
       const res = await upsertGroupChannelFallback({
@@ -243,9 +263,6 @@ export function GroupChannelFallbackSection() {
         throw new Error(res.message || t('Failed to update status'))
       }
       toast.success(t('Updated successfully'))
-      if (editingKey === key) {
-        setForm((prev) => ({ ...prev, enabled }))
-      }
       await fallbackListQuery.refetch()
     } catch (error) {
       const message =
@@ -257,7 +274,7 @@ export function GroupChannelFallbackSection() {
   }
 
   return (
-    <SettingsSection title={t('Group fallback')}>
+    <SettingsSection title={t('Group channel fallback')}>
       <p className='text-muted-foreground mb-4 text-sm'>
         {t(
           'This setting only takes effect after normal retries are exhausted. The system matches by group + channel type, then sends one additional request to the configured fallback channel.'
@@ -271,120 +288,14 @@ export function GroupChannelFallbackSection() {
         </div>
       ) : (
         <>
-          <div className='grid gap-4 md:grid-cols-3'>
-            <div className='grid gap-1.5'>
-              <Label>{t('Group')}</Label>
-              <Select
-                value={form.group_name}
-                onValueChange={(value) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    group_name: value ?? '',
-                    fallback_channel_id: '',
-                  }))
-                }
-              >
-                <SelectTrigger disabled={editingId > 0}>
-                  <SelectValue placeholder={t('Select group')} />
-                </SelectTrigger>
-                <SelectContent>
-                  {groups.map((group) => (
-                    <SelectItem key={group} value={group}>
-                      {group}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className='grid gap-1.5'>
-              <Label>{t('Channel type')}</Label>
-              <Select
-                value={form.channel_type}
-                onValueChange={(value) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    channel_type: value ?? '',
-                    fallback_channel_id: '',
-                  }))
-                }
-              >
-                <SelectTrigger disabled={editingId > 0}>
-                  <SelectValue placeholder={t('Select channel type')} />
-                </SelectTrigger>
-                <SelectContent>
-                  {CHANNEL_TYPE_OPTIONS.map((item) => (
-                    <SelectItem key={item.value} value={String(item.value)}>
-                      {t(item.label)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className='grid gap-1.5'>
-              <Label>{t('Fallback channel')}</Label>
-              <Select
-                value={form.fallback_channel_id}
-                onValueChange={(value) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    fallback_channel_id: value ?? '',
-                  }))
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder={t('Select fallback channel')} />
-                </SelectTrigger>
-                <SelectContent>
-                  {fallbackChannelOptions.map((item) => (
-                    <SelectItem key={item.value} value={item.value}>
-                      {item.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <div className='mt-4 grid gap-4 md:grid-cols-3'>
-            <div className='grid gap-1.5 md:col-span-2'>
-              <Label>{t('Remark')}</Label>
-              <Input
-                value={form.remark}
-                maxLength={255}
-                onChange={(event) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    remark: event.target.value,
-                  }))
-                }
-                placeholder={t('Optional')}
-              />
-            </div>
-            <div className='flex items-end gap-3'>
-              <div className='flex items-center gap-2 pb-2'>
-                <Label>{t('Enabled')}</Label>
-                <Switch
-                  checked={form.enabled}
-                  onCheckedChange={(checked) =>
-                    setForm((prev) => ({ ...prev, enabled: checked }))
-                  }
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className='mt-4 flex gap-2'>
-            <Button onClick={onSubmit} disabled={submitting}>
-              {editingKey ? t('Update fallback rule') : t('Save fallback rule')}
-            </Button>
-            <Button variant='outline' onClick={onReset} disabled={submitting}>
-              {t('Reset')}
+          <div className='mb-4'>
+            <Button onClick={openCreateDialog} disabled={submitting}>
+              <Plus className='mr-1 h-4 w-4' />
+              {t('Add group fallback rule')}
             </Button>
           </div>
 
-          <div className='mt-6 overflow-x-auto rounded-md border'>
+          <div className='overflow-x-auto rounded-md border'>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -399,7 +310,10 @@ export function GroupChannelFallbackSection() {
               <TableBody>
                 {configs.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className='text-muted-foreground text-center'>
+                    <TableCell
+                      colSpan={6}
+                      className='text-muted-foreground text-center'
+                    >
                       {t('No fallback rules')}
                     </TableCell>
                   </TableRow>
@@ -407,17 +321,23 @@ export function GroupChannelFallbackSection() {
                   configs.map((item) => {
                     const key = `${item.group_name}#${item.channel_type}`
                     const typeLabel =
-                      CHANNEL_TYPE_OPTIONS.find((opt) => opt.value === item.channel_type)
-                        ?.label || String(item.channel_type)
+                      CHANNEL_TYPE_OPTIONS.find(
+                        (opt) => opt.value === item.channel_type
+                      )?.label || String(item.channel_type)
                     return (
                       <TableRow key={key}>
                         <TableCell>{item.group_name}</TableCell>
                         <TableCell>{t(typeLabel)}</TableCell>
-                        <TableCell>{channelDisplayMap.get(item.fallback_channel_id) || '-'}</TableCell>
+                        <TableCell>
+                          {channelDisplayMap.get(item.fallback_channel_id) ||
+                            '-'}
+                        </TableCell>
                         <TableCell>
                           <Switch
                             checked={item.enabled}
-                            onCheckedChange={(checked) => onToggle(item, checked)}
+                            onCheckedChange={(checked) =>
+                              onToggle(item, checked)
+                            }
                             disabled={submitting}
                           />
                         </TableCell>
@@ -452,6 +372,139 @@ export function GroupChannelFallbackSection() {
           </div>
         </>
       )}
+
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={onDialogOpenChange}
+        title={
+          isEditing
+            ? t('Edit group fallback rule')
+            : t('Add group fallback rule')
+        }
+        description={t(
+          'After selecting a group and channel type, you can assign any channel of the same type as the fallback. It triggers once only after main retries are exhausted.'
+        )}
+        contentClassName='max-w-2xl'
+        contentHeight='auto'
+        bodyClassName='space-y-4'
+        footer={
+          <>
+            <Button
+              type='button'
+              variant='outline'
+              onClick={closeDialog}
+              disabled={submitting}
+            >
+              {t('Cancel')}
+            </Button>
+            <Button onClick={onSubmit} disabled={submitting}>
+              {submitting && <Loader2 className='mr-2 h-4 w-4 animate-spin' />}
+              {t('Save')}
+            </Button>
+          </>
+        }
+      >
+        <div className='grid gap-4 sm:grid-cols-2'>
+          <div className='grid gap-1.5'>
+            <Label>{t('Group')}</Label>
+            <Select
+              value={form.group_name}
+              onValueChange={(value) =>
+                setForm((prev) => ({
+                  ...prev,
+                  group_name: value ?? '',
+                  fallback_channel_id: '',
+                }))
+              }
+            >
+              <SelectTrigger disabled={isEditing}>
+                <SelectValue placeholder={t('Select group')} />
+              </SelectTrigger>
+              <SelectContent>
+                {groups.map((group) => (
+                  <SelectItem key={group} value={group}>
+                    {group}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className='grid gap-1.5'>
+            <Label>{t('Channel type')}</Label>
+            <Select
+              value={form.channel_type}
+              onValueChange={(value) =>
+                setForm((prev) => ({
+                  ...prev,
+                  channel_type: value ?? '',
+                  fallback_channel_id: '',
+                }))
+              }
+            >
+              <SelectTrigger disabled={isEditing}>
+                <SelectValue placeholder={t('Select channel type')} />
+              </SelectTrigger>
+              <SelectContent>
+                {CHANNEL_TYPE_OPTIONS.map((item) => (
+                  <SelectItem key={item.value} value={String(item.value)}>
+                    {t(item.label)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className='grid gap-1.5 sm:col-span-2'>
+            <Label>{t('Fallback channel')}</Label>
+            <Select
+              value={form.fallback_channel_id}
+              onValueChange={(value) =>
+                setForm((prev) => ({
+                  ...prev,
+                  fallback_channel_id: value ?? '',
+                }))
+              }
+            >
+              <SelectTrigger>
+                <SelectValue placeholder={t('Select fallback channel')} />
+              </SelectTrigger>
+              <SelectContent>
+                {fallbackChannelOptions.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className='grid gap-1.5 sm:col-span-2'>
+            <Label>{t('Remark')}</Label>
+            <Input
+              value={form.remark}
+              maxLength={255}
+              onChange={(event) =>
+                setForm((prev) => ({
+                  ...prev,
+                  remark: event.target.value,
+                }))
+              }
+              placeholder={t('Optional')}
+            />
+          </div>
+
+          <div className='flex items-center gap-2'>
+            <Label>{t('Enabled')}</Label>
+            <Switch
+              checked={form.enabled}
+              onCheckedChange={(checked) =>
+                setForm((prev) => ({ ...prev, enabled: checked }))
+              }
+            />
+          </div>
+        </div>
+      </Dialog>
     </SettingsSection>
   )
 }

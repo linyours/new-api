@@ -38,6 +38,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
@@ -282,7 +283,7 @@ export function TTFTMonitoringSection({
           <div className='grid gap-4 md:grid-cols-2'>
             <SettingsSwitchItem>
               <SettingsSwitchContent>
-                <FormLabel>{t('Enable TTFT monitoring')}</FormLabel>
+                <Label>{t('Enable TTFT monitoring')}</Label>
               </SettingsSwitchContent>
               <Switch
                 checked={form.enabled}
@@ -293,7 +294,7 @@ export function TTFTMonitoringSection({
             </SettingsSwitchItem>
 
             <div className='grid gap-1.5'>
-              <FormLabel>{t('Alert method')}</FormLabel>
+              <Label>{t('Alert method')}</Label>
               <Select
                 items={[
                   {
@@ -325,7 +326,7 @@ export function TTFTMonitoringSection({
 
           <div className='grid gap-4 md:grid-cols-3'>
             <div className='grid gap-1.5'>
-              <FormLabel>{t('Slow first-token threshold')}</FormLabel>
+              <Label>{t('Slow first-token threshold')}</Label>
               <div className='flex items-center gap-2'>
                 <Input
                   type='number'
@@ -348,7 +349,7 @@ export function TTFTMonitoringSection({
               </div>
             </div>
             <div className='grid gap-1.5'>
-              <FormLabel>{t('Statistics window')}</FormLabel>
+              <Label>{t('Statistics window')}</Label>
               <div className='flex items-center gap-2'>
                 <Input
                   type='number'
@@ -368,7 +369,7 @@ export function TTFTMonitoringSection({
               </div>
             </div>
             <div className='grid gap-1.5'>
-              <FormLabel>{t('Trigger count')}</FormLabel>
+              <Label>{t('Trigger count')}</Label>
               <Input
                 type='number'
                 min={1}
@@ -386,7 +387,7 @@ export function TTFTMonitoringSection({
 
           <div className='grid gap-4 md:grid-cols-3'>
             <div className='grid gap-1.5'>
-              <FormLabel>{t('Alert cooldown')}</FormLabel>
+              <Label>{t('Alert cooldown')}</Label>
               <div className='flex items-center gap-2'>
                 <Input
                   type='number'
@@ -406,7 +407,7 @@ export function TTFTMonitoringSection({
               </div>
             </div>
             <div className='grid gap-1.5 md:col-span-2'>
-              <FormLabel>{t('Monitored channel IDs')}</FormLabel>
+              <Label>{t('Monitored channel IDs')}</Label>
               <TagInput
                 value={form.channel_ids}
                 onChange={(channel_ids) =>
@@ -425,7 +426,7 @@ export function TTFTMonitoringSection({
           {form.notify_type === 'webhook' ? (
             <div className='grid gap-4 md:grid-cols-2'>
               <div className='grid gap-1.5'>
-                <FormLabel>{t('Webhook URL')}</FormLabel>
+                <Label>{t('Webhook URL')}</Label>
                 <Input
                   value={form.webhook_url}
                   placeholder='https://example.com/webhook'
@@ -438,7 +439,7 @@ export function TTFTMonitoringSection({
                 />
               </div>
               <div className='grid gap-1.5'>
-                <FormLabel>{t('Webhook secret')}</FormLabel>
+                <Label>{t('Webhook secret')}</Label>
                 <Input
                   type='password'
                   value={form.webhook_secret}
