@@ -46,6 +46,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import type { ChannelLayeredMetric } from '@/features/performance-metrics/types'
 import { toIntlLocale } from '@/i18n/languages'
 import {
   formatCurrencyFromUSD,
@@ -56,7 +57,11 @@ import { formatTimestampToDate } from '@/lib/format'
 import { truncateText } from '@/lib/utils'
 
 import { getCodexUsage } from '../api'
-import { CHANNEL_STATUS_CONFIG, MODEL_FETCHABLE_TYPES } from '../constants'
+import {
+  CHANNEL_STATUS,
+  CHANNEL_STATUS_CONFIG,
+  MODEL_FETCHABLE_TYPES,
+} from '../constants'
 import {
   formatRelativeTime,
   formatResponseTime,
@@ -78,6 +83,7 @@ import {
 import { parseUpstreamUpdateMeta } from '../lib/upstream-update-utils'
 import type { Channel } from '../types'
 import { ChannelRowActionsLayoutContext } from './channel-row-actions-context'
+import { ChannelSuccessRateCell } from './channel-success-rate-cell'
 import { useChannels } from './channels-provider'
 import { DataTableRowActions } from './data-table-row-actions'
 import { DataTableTagRowActions } from './data-table-tag-row-actions'
@@ -546,11 +552,15 @@ function BalanceCell({ channel }: { channel: Channel }) {
 export function useChannelsColumns(
   options: {
     enableSelection?: boolean
+    successRates?: Map<number, ChannelLayeredMetric>
+    successRatesLoading?: boolean
   } = {}
 ): ColumnDef<Channel>[] {
   const { t, i18n } = useTranslation()
   const { sensitiveVisible } = useChannels()
   const enableSelection = options.enableSelection ?? true
+  const successRates = options.successRates
+  const successRatesLoading = options.successRatesLoading ?? false
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   // The column definitions only depend on the translation function, the active
   // locale, and sensitive-data visibility. Memoizing keeps the array (and every
@@ -1096,6 +1106,32 @@ export function useChannelsColumns(
         size: 180,
       },
 
+      // Success rate (1h) — click to open layered windows; enabled only
+      {
+        id: 'success_rate',
+        header: t('Success rate (1h)'),
+        meta: { mobileHidden: true },
+        enableSorting: false,
+        cell: ({ row }) => {
+          if (isTagAggregateRow(row.original)) {
+            return <span className='text-muted-foreground text-xs'>—</span>
+          }
+          const channel = row.original
+          if (channel.status !== CHANNEL_STATUS.ENABLED) {
+            return <span className='text-muted-foreground text-xs'>—</span>
+          }
+          return (
+            <ChannelSuccessRateCell
+              channelId={channel.id}
+              channelName={channel.name}
+              metric={successRates?.get(channel.id)}
+              loading={successRatesLoading && !successRates?.has(channel.id)}
+            />
+          )
+        },
+        size: 120,
+      },
+
       // Response Time column
       {
         accessorKey: 'response_time',
@@ -1184,6 +1220,13 @@ export function useChannelsColumns(
         meta: { pinned: 'right' as const },
       },
     ],
-    [enableSelection, t, locale, sensitiveVisible]
+    [
+      enableSelection,
+      t,
+      locale,
+      sensitiveVisible,
+      successRates,
+      successRatesLoading,
+    ]
   )
 }

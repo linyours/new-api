@@ -21,7 +21,14 @@ var hotBuckets sync.Map
 const seriesSchema = "dbcd0a3c01b55203"
 
 func Init() {
+	model.ChannelStatusChangedHook = func(channelId int, newStatus int) {
+		if newStatus == common.ChannelStatusEnabled {
+			return
+		}
+		ClearChannelLayeredMetrics(channelId)
+	}
 	go flushLoop()
+	go layeredCleanupLoop()
 }
 
 func RecordRelaySample(info *relaycommon.RelayInfo, success bool, outputTokens int64) {
@@ -45,6 +52,8 @@ func RecordRelaySample(info *relaycommon.RelayInfo, success bool, outputTokens i
 	Record(Sample{
 		Model:        info.OriginModelName,
 		Group:        info.UsingGroup,
+		ChannelID:    info.ChannelId,
+		ChannelType:  info.ChannelType,
 		LatencyMs:    latencyMs,
 		TtftMs:       ttftMs,
 		HasTtft:      hasTtft,
@@ -74,6 +83,7 @@ func Record(sample Sample) {
 	actual, _ := hotBuckets.LoadOrStore(key, &atomicBucket{})
 	actual.(*atomicBucket).add(sample)
 	recordRedis(key, sample)
+	recordLayered(sample)
 }
 
 func Query(params QueryParams) (QueryResult, error) {

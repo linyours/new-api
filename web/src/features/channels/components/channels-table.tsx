@@ -42,6 +42,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { getPerfMetricsLayeredChannels } from '@/features/performance-metrics/api'
+import type { ChannelLayeredMetric } from '@/features/performance-metrics/types'
 import { useMediaQuery } from '@/hooks'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
 import { getLobeIcon } from '@/lib/lobe-icon'
@@ -304,8 +306,70 @@ export function ChannelsTable() {
   const totalCount = data?.data?.total || 0
   const typeCounts = data?.data?.type_counts
 
+  const enabledChannelIds = useMemo(() => {
+    const ids: number[] = []
+    const seen = new Set<number>()
+    const pushEnabled = (channel: Channel) => {
+      if (isTagAggregateRow(channel)) {
+        return
+      }
+      if (channel.status !== CHANNEL_STATUS.ENABLED || channel.id <= 0) {
+        return
+      }
+      if (seen.has(channel.id)) {
+        return
+      }
+      seen.add(channel.id)
+      ids.push(channel.id)
+    }
+    for (const channel of channels) {
+      pushEnabled(channel)
+      const children = (channel as Channel & { children?: Channel[] }).children
+      if (children) {
+        for (const child of children) {
+          pushEnabled(child)
+        }
+      }
+    }
+    return ids
+  }, [channels])
+
+  const successRatesQuery = useQuery({
+    queryKey: ['channel-layered-success', enabledChannelIds],
+    queryFn: async () => {
+      const res = await getPerfMetricsLayeredChannels({
+        ids: enabledChannelIds,
+        windowSeconds: 3600,
+      })
+      if (!res.success) {
+        throw new Error(res.message || 'Failed to load channel success rates')
+      }
+      return res.data.items ?? {}
+    },
+    enabled: enabledChannelIds.length > 0,
+    staleTime: 30 * 1000,
+    refetchInterval: 60 * 1000,
+    retry: false,
+  })
+
+  const successRates = useMemo(() => {
+    const items = successRatesQuery.data ?? {}
+    const map = new Map<number, ChannelLayeredMetric>()
+    for (const [id, metric] of Object.entries(items)) {
+      const channelId = Number(id)
+      if (Number.isFinite(channelId) && channelId > 0) {
+        map.set(channelId, metric)
+      }
+    }
+    return map
+  }, [successRatesQuery.data])
+
   // Columns configuration
-  const columns = useChannelsColumns({ enableSelection: batchMode })
+  const columns = useChannelsColumns({
+    enableSelection: batchMode,
+    successRates,
+    successRatesLoading: successRatesQuery.isLoading,
+  })
 
   // React Table instance
   const { table } = useDataTable({

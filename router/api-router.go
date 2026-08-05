@@ -37,6 +37,10 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			perfMetricsRoute.GET("/summary", controller.GetPerfMetricsSummary)
 			perfMetricsRoute.GET("", controller.GetPerfMetrics)
+			// Admin-only layered windows; registered on the same group so the
+			// path is always present next to /summary (avoids NoRoute 404).
+			perfMetricsRoute.GET("/layered/channels", middleware.AdminAuth(), controller.GetPerfMetricsLayeredChannels)
+			perfMetricsRoute.GET("/layered", middleware.AdminAuth(), controller.GetPerfMetricsLayered)
 		}
 		apiRouter.GET("/rankings", middleware.HeaderNavModuleAuth("rankings"), controller.GetRankings)
 		apiRouter.GET("/verification", middleware.EmailVerificationRateLimit(), middleware.TurnstileCheck(), controller.SendEmailVerification)

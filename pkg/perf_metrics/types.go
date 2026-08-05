@@ -10,6 +10,8 @@ type Store interface {
 type Sample struct {
 	Model        string
 	Group        string
+	ChannelID    int
+	ChannelType  int
 	LatencyMs    int64
 	TtftMs       int64
 	HasTtft      bool

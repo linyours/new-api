@@ -61,6 +61,7 @@ function ChannelCardComponent({
 
   const fieldLabels: Record<string, string> = {
     balance: t('Used / Remaining'),
+    success_rate: t('Success rate (1h)'),
     response_time: t('Response'),
     test_time: t('Last Tested'),
   }
@@ -75,6 +76,7 @@ function ChannelCardComponent({
   const priorityCell = renderCell('priority')
   const weightCell = renderCell('weight')
   const balanceCell = renderCell('balance')
+  const successRateCell = renderCell('success_rate')
   const responseCell = renderCell('response_time')
   const testCell = renderCell('test_time')
 
@@ -142,17 +144,27 @@ function ChannelCardComponent({
             <div className='flex justify-start'>{priorityCell}</div>
             <div className='flex justify-start'>{weightCell}</div>
             <span className={cn('mt-2', labelClass)}>
-              {fieldLabels.response_time}
+              {fieldLabels.success_rate}
             </span>
             <span className={cn('mt-2', labelClass)}>
-              {fieldLabels.test_time}
+              {fieldLabels.response_time}
             </span>
+            <div className='overflow-hidden text-sm'>
+              {successRateCell ?? (
+                <span className='text-muted-foreground'>-</span>
+              )}
+            </div>
             <div className='overflow-hidden text-sm'>
               {responseCell ?? <span className='text-muted-foreground'>-</span>}
             </div>
+            <span className={cn('mt-2', labelClass)}>
+              {fieldLabels.test_time}
+            </span>
+            <span className={cn('mt-2', labelClass)} />
             <div className='overflow-hidden text-sm'>
               {testCell ?? <span className='text-muted-foreground'>-</span>}
             </div>
+            <div />
           </div>
         </div>
 

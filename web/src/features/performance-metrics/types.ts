@@ -59,3 +59,41 @@ export type PerfSummaryAllData = {
     models: PerfModelSummary[]
   }
 }
+
+export type LayeredDimension = 'all' | 'channel_type' | 'channel' | 'model'
+
+export type LayeredWindow = {
+  label: string
+  seconds: number
+  success_rate: number
+  request_count: number
+}
+
+export type LayeredMetricsData = {
+  success: boolean
+  message?: string
+  data: {
+    as_of: number
+    dimension: LayeredDimension
+    channel_type?: number
+    channel_type_name?: string
+    channel_id?: number
+    model_name?: string
+    windows: LayeredWindow[]
+  }
+}
+
+export type ChannelLayeredMetric = {
+  success_rate: number
+  request_count: number
+}
+
+export type ChannelLayeredBatchData = {
+  success: boolean
+  message?: string
+  data: {
+    as_of: number
+    window_seconds: number
+    items: Record<string, ChannelLayeredMetric>
+  }
+}

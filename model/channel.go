@@ -709,6 +709,19 @@ func hasEnabledMultiKey(keys []string, statusList map[int]int) bool {
 	return false
 }
 
+// ChannelStatusChangedHook is injected by other packages (e.g. perfmetrics)
+// after a channel's persisted status changes. newStatus is the final
+// channel-level status (multi-key key-only disables that leave the channel
+// enabled will still report ChannelStatusEnabled).
+var ChannelStatusChangedHook func(channelId int, newStatus int)
+
+func notifyChannelStatusChanged(channelId int, newStatus int) {
+	if ChannelStatusChangedHook == nil {
+		return
+	}
+	ChannelStatusChangedHook(channelId, newStatus)
+}
+
 func UpdateChannelStatus(channelId int, usingKey string, status int, reason string) bool {
 	if common.MemoryCacheEnabled {
 		channelStatusLock.Lock()
@@ -781,6 +794,7 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 			return false
 		}
 	}
+	notifyChannelStatusChanged(channelId, channel.Status)
 	return true
 }
 
@@ -794,12 +808,20 @@ func EnableChannelByTag(tag string) error {
 }
 
 func DisableChannelByTag(tag string) error {
+	var ids []int
+	_ = DB.Model(&Channel{}).Where("tag = ?", tag).Pluck("id", &ids)
 	err := DB.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusManuallyDisabled).Error
 	if err != nil {
 		return err
 	}
 	err = UpdateAbilityStatusByTag(tag, false)
-	return err
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		notifyChannelStatusChanged(id, common.ChannelStatusManuallyDisabled)
+	}
+	return nil
 }
 
 func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *string, group *string, priority *int64, weight *uint, paramOverride *string, headerOverride *string) error {
