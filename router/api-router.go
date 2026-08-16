@@ -245,6 +245,34 @@ func SetApiRouter(router *gin.Engine) {
 		}
 		registerChannelRoutes(apiRouter)
 		registerAuthzRoutes(apiRouter)
+
+		v1ManageRoute := apiRouter.Group("/v1")
+		{
+			supplierChannelRoute := v1ManageRoute.Group("/internal/supplier/channels")
+			supplierChannelRoute.Use(middleware.SupplierInternalAuth())
+			{
+				supplierChannelRoute.GET("", controller.ListSupplierChannels)
+				supplierChannelRoute.GET("/:id", controller.GetSupplierChannel)
+				supplierChannelRoute.POST("", controller.CreateSupplierChannel)
+				supplierChannelRoute.PATCH("/:id", controller.UpdateSupplierChannel)
+				supplierChannelRoute.PUT("/:id/status", controller.UpdateSupplierChannelStatus)
+			}
+			v1TokenRoute := v1ManageRoute.Group("/token")
+			v1TokenRoute.Use(middleware.UserAuth())
+			{
+				v1TokenRoute.PUT("/routing-max-cost-price/batch", controller.BatchUpdateTokenRoutingMaxCostPrice)
+				v1TokenRoute.GET("/:id/routing-max-cost-price", controller.GetTokenRoutingMaxCostPrice)
+				v1TokenRoute.PUT("/:id/routing-max-cost-price", controller.UpdateTokenRoutingMaxCostPrice)
+			}
+			v1ChannelRoute := v1ManageRoute.Group("/channel")
+			v1ChannelRoute.Use(middleware.AdminAuth())
+			{
+				v1ChannelRoute.PUT("/cost-price/batch", controller.BatchUpdateChannelCostPrice)
+				v1ChannelRoute.GET("/:id/cost-price", controller.GetChannelCostPrice)
+				v1ChannelRoute.PUT("/:id/cost-price", controller.UpdateChannelCostPrice)
+			}
+		}
+
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())
 		{

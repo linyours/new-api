@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	chselector "github.com/QuantumNous/new-api/pkg/channel_selector"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
@@ -111,10 +112,10 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
-func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string, exclude map[int]struct{}, maxCostByType map[string]float64) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannel(group, model, retry, requestPath)
+		return GetChannel(group, model, retry, requestPath, exclude, maxCostByType)
 	}
 
 	channelSyncLock.RLock()
@@ -133,7 +134,28 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 		return nil, nil
 	}
 
+	// --- custom: channel_selector (fork) ---
+	channels = filterCachedChannelIDsByMaxCost(channels, maxCostByType)
+	if len(channels) == 0 {
+		return nil, nil
+	}
+	if chselector.Enabled() {
+		return pickChannelWithSelector(channels, model, exclude, maxCostByType)
+	}
+	if chselector.DebugLoggingEnabled() {
+		logger.LogInfo(nil, fmt.Sprintf(
+			"[channel_selector] model=%s path=priority_weight reason=selector_disabled candidates=%d",
+			model, len(channels),
+		))
+	}
+	// --- end custom ---
+
 	if len(channels) == 1 {
+		if exclude != nil {
+			if _, skip := exclude[channels[0]]; skip {
+				return nil, nil
+			}
+		}
 		if channel, ok := channelsIDM[channels[0]]; ok {
 			return channel, nil
 		}
@@ -207,6 +229,59 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 	// return null if no channel is not found
 	return nil, errors.New("channel not found")
 }
+
+// --- custom: channel_selector (fork) ---
+
+// filterCachedChannelIDsByMaxCost drops priced channels above the user's per-type cap.
+// Caller must hold channelSyncLock (read lock). Nil/empty maxCostByType is a no-op.
+func filterCachedChannelIDsByMaxCost(channelIDs []int, maxCostByType map[string]float64) []int {
+	if len(channelIDs) == 0 || len(maxCostByType) == 0 {
+		return channelIDs
+	}
+	filtered := make([]int, 0, len(channelIDs))
+	for _, id := range channelIDs {
+		ch, ok := channelsIDM[id]
+		if !ok || ch == nil {
+			continue
+		}
+		if chselector.ExceedsMaxCostPrice(maxCostByType, ch.Type, ch.GetCostPrice()) {
+			continue
+		}
+		filtered = append(filtered, id)
+	}
+	return filtered
+}
+
+// pickChannelWithSelector runs multi-factor pick on cached channel IDs.
+// Caller must hold channelSyncLock (read lock).
+// maxCostByType is applied again inside Pick as defense in depth (cheap O(1) checks).
+func pickChannelWithSelector(channels []int, modelName string, exclude map[int]struct{}, maxCostByType map[string]float64) (*Channel, error) {
+	views := make([]chselector.ChannelView, 0, len(channels))
+	id2ch := make(map[int]*Channel, len(channels))
+	for _, id := range channels {
+		ch, ok := channelsIDM[id]
+		if !ok || ch == nil {
+			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", id)
+		}
+		views = append(views, chselector.ChannelView{
+			ID:           ch.Id,
+			Type:         ch.Type,
+			CostPrice:    ch.GetCostPrice(),
+			ResponseTime: ch.ResponseTime,
+		})
+		id2ch[ch.Id] = ch
+	}
+	picked := chselector.Pick(views, modelName, exclude, chselector.DefaultConfig(), maxCostByType)
+	if picked == 0 {
+		return nil, nil
+	}
+	if ch, ok := id2ch[picked]; ok {
+		return ch, nil
+	}
+	return nil, errors.New("channel not found")
+}
+
+// --- end custom ---
 
 // filterChannelsByRequestPathAndModel restricts candidates by request path and
 // model. Only Advanced Custom (type 58) channels are path-checked: they are kept

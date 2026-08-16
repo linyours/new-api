@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	chselector "github.com/QuantumNous/new-api/pkg/channel_selector"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -184,11 +185,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}()
 
 	retryParam := &service.RetryParam{
-		Ctx:         c,
-		TokenGroup:  relayInfo.TokenGroup,
-		ModelName:   relayInfo.OriginModelName,
-		RequestPath: c.Request.URL.Path,
-		Retry:       common.GetPointer(0),
+		Ctx:                c,
+		TokenGroup:         relayInfo.TokenGroup,
+		ModelName:          relayInfo.OriginModelName,
+		RequestPath:        c.Request.URL.Path,
+		Retry:              common.GetPointer(0),
+		MaxCostPriceByType: nil, // filled from token via ApplyTokenRoutingMaxCost
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
@@ -221,6 +223,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 
+		// --- custom: channel_selector (fork) ---
+		attemptStart := time.Now()
+		// --- end custom ---
+
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
 			newAPIError = relay.WssHelper(c, relayInfo)
@@ -231,6 +237,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		default:
 			newAPIError = relayHandler(c, relayInfo)
 		}
+
+		// --- custom: channel_selector (fork) ---
+		service.RecordRelayAttempt(channel.Id, relayInfo.OriginModelName, newAPIError, time.Since(attemptStart).Milliseconds())
+		// --- end custom ---
 
 		if newAPIError == nil {
 			relayInfo.LastError = nil
@@ -256,6 +266,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				logger.LogInfo(c, fmt.Sprintf("渠道亲和缓存已清理（触发条件：429，retry=%d，channel_id=%d）", retryParam.GetRetry(), channel.Id))
 			}
 		}
+
+		// --- custom: channel_selector (fork) ---
+		if chselector.Enabled() {
+			retryParam.Exclude(channel.Id)
+		}
+		// --- end custom ---
 
 		remainingRetry := common.RetryTimes - retryParam.GetRetry()
 		if !shouldRetry(c, newAPIError, remainingRetry) {
@@ -711,11 +727,12 @@ func RelayTask(c *gin.Context) {
 	}()
 
 	retryParam := &service.RetryParam{
-		Ctx:         c,
-		TokenGroup:  relayInfo.TokenGroup,
-		ModelName:   relayInfo.OriginModelName,
-		RequestPath: c.Request.URL.Path,
-		Retry:       common.GetPointer(0),
+		Ctx:                c,
+		TokenGroup:         relayInfo.TokenGroup,
+		ModelName:          relayInfo.OriginModelName,
+		RequestPath:        c.Request.URL.Path,
+		Retry:              common.GetPointer(0),
+		MaxCostPriceByType: nil, // filled from token via ApplyTokenRoutingMaxCost
 	}
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
@@ -751,7 +768,20 @@ func RelayTask(c *gin.Context) {
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 
+		// --- custom: channel_selector (fork) ---
+		attemptStart := time.Now()
+		// --- end custom ---
+
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
+
+		// --- custom: channel_selector (fork) ---
+		var attemptAPIErr *types.NewAPIError
+		if taskErr != nil {
+			attemptAPIErr = types.NewOpenAIError(taskErr.Error, types.ErrorCodeBadResponseStatusCode, taskErr.StatusCode)
+		}
+		service.RecordRelayAttempt(channel.Id, relayInfo.OriginModelName, attemptAPIErr, time.Since(attemptStart).Milliseconds())
+		// --- end custom ---
+
 		if taskErr == nil {
 			break
 		}
@@ -772,6 +802,12 @@ func RelayTask(c *gin.Context) {
 			}
 		}
 
+		// --- custom: channel_selector (fork) ---
+		if chselector.Enabled() {
+			retryParam.Exclude(channel.Id)
+		}
+		// --- end custom ---
+
 		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
@@ -785,7 +821,11 @@ func RelayTask(c *gin.Context) {
 
 	// ── 成功：结算 + 日志 + 插入任务 ──
 	if taskErr == nil {
-		if settleErr := service.SettleBilling(c, relayInfo, result.Quota); settleErr != nil {
+		// --- custom: channel_selector (fork) ---
+		// Pre-consume stays on model price; only actual settle may use cost_price.
+		settleQuota := service.ApplyChannelCostPriceSettle(relayInfo, result.Quota)
+		// --- end custom ---
+		if settleErr := service.SettleBilling(c, relayInfo, settleQuota); settleErr != nil {
 			common.SysError("settle task billing error: " + settleErr.Error())
 		}
 		service.LogTaskConsumption(c, relayInfo)
@@ -804,7 +844,7 @@ func RelayTask(c *gin.Context) {
 			OriginModelName: relayInfo.OriginModelName,
 			PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
 		}
-		task.Quota = result.Quota
+		task.Quota = settleQuota
 		task.Data = result.TaskData
 		task.Action = relayInfo.Action
 		if insertErr := task.Insert(); insertErr != nil {

@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	chselector "github.com/QuantumNous/new-api/pkg/channel_selector"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -215,6 +216,12 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		logContent = fmt.Sprintf("模型价格 %.2f，分组倍率 %.2f", modelPrice, groupRatio)
 	}
 
+	// --- custom: channel_selector (fork) ---
+	if totalTokens != 0 {
+		quota = ApplyChannelCostPriceSettle(relayInfo, quota)
+	}
+	// --- end custom ---
+
 	// record all the consume log even if quota is 0
 	if totalTokens == 0 {
 		// in this case, must be some error happened
@@ -241,6 +248,13 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	if tieredResult != nil {
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
+	// --- custom: channel_selector (fork) ---
+	if applied, costPrice := ChannelCostSettleApplied(relayInfo); applied {
+		chselector.AnnotateSettleOther(other, relayInfo.ChannelId, true, costPrice)
+	} else {
+		chselector.AnnotateSettleOther(other, relayInfo.ChannelId, false, -1)
+	}
+	// --- end custom ---
 	attachQuotaSaturation(ctx, relayInfo, other)
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
@@ -338,6 +352,12 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		logContent = fmt.Sprintf("模型价格 %.2f，分组倍率 %.2f", modelPrice, groupRatio)
 	}
 
+	// --- custom: channel_selector (fork) ---
+	if totalTokens != 0 {
+		quota = ApplyChannelCostPriceSettle(relayInfo, quota)
+	}
+	// --- end custom ---
+
 	// record all the consume log even if quota is 0
 	if totalTokens == 0 {
 		// in this case, must be some error happened
@@ -364,6 +384,13 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 	if tieredResult != nil {
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
+	// --- custom: channel_selector (fork) ---
+	if applied, costPrice := ChannelCostSettleApplied(relayInfo); applied {
+		chselector.AnnotateSettleOther(other, relayInfo.ChannelId, true, costPrice)
+	} else {
+		chselector.AnnotateSettleOther(other, relayInfo.ChannelId, false, -1)
+	}
+	// --- end custom ---
 	attachQuotaSaturation(ctx, relayInfo, other)
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,

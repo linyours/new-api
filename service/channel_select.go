@@ -7,6 +7,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	chselector "github.com/QuantumNous/new-api/pkg/channel_selector"
 	"github.com/gin-gonic/gin"
 )
 
@@ -17,7 +18,51 @@ type RetryParam struct {
 	RequestPath  string
 	Retry        *int
 	resetNextTry bool
+
+	// --- custom: channel_selector (fork) ---
+	// ExcludeChannelIDs skips channels that already failed in this request.
+	// Only used when multi-factor selector is enabled.
+	ExcludeChannelIDs map[int]struct{}
+	// MaxCostPriceByType caps channel cost_price by ChannelType (and optional "default").
+	// Nil/empty means no per-type caps. Applied on selector and official weight paths.
+	MaxCostPriceByType map[string]float64
+	// --- end custom ---
 }
+
+// ApplyTokenRoutingMaxCost copies RoutingMaxCostPriceByType from the request token
+// when MaxCostPriceByType has not been set yet (nil).
+func (p *RetryParam) ApplyTokenRoutingMaxCost() {
+	if p == nil || p.Ctx == nil || p.MaxCostPriceByType != nil {
+		return
+	}
+	byType, ok := common.GetContextKeyType[map[string]float64](p.Ctx, constant.ContextKeyTokenRoutingMaxCostPriceByType)
+	if !ok || len(byType) == 0 {
+		return
+	}
+	p.MaxCostPriceByType = byType
+}
+
+// --- custom: channel_selector (fork) ---
+
+// Exclude marks a channel so later picks in this request skip it.
+func (p *RetryParam) Exclude(channelID int) {
+	if p == nil || channelID <= 0 {
+		return
+	}
+	if p.ExcludeChannelIDs == nil {
+		p.ExcludeChannelIDs = make(map[int]struct{})
+	}
+	p.ExcludeChannelIDs[channelID] = struct{}{}
+}
+
+func (p *RetryParam) excludeMap() map[int]struct{} {
+	if p == nil || !chselector.Enabled() {
+		return nil
+	}
+	return p.ExcludeChannelIDs
+}
+
+// --- end custom ---
 
 func (p *RetryParam) GetRetry() int {
 	if p.Retry == nil {
@@ -83,6 +128,9 @@ func (p *RetryParam) ResetRetryNextTry() {
 func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
 	var channel *model.Channel
 	var err error
+	if param != nil {
+		param.ApplyTokenRoutingMaxCost()
+	}
 	selectGroup := param.TokenGroup
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
 
@@ -115,7 +163,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath)
+			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath, param.excludeMap(), param.MaxCostPriceByType)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -153,7 +201,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath)
+		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath, param.excludeMap(), param.MaxCostPriceByType)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}

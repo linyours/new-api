@@ -627,6 +627,10 @@ func AddChannel(c *gin.Context) {
 	}
 
 	addChannelRequest.Channel.CreatedTime = common.GetTimestamp()
+	// Channel ownership is assigned only by the internal supplier V1 API.
+	addChannelRequest.Channel.OwnerUserId = 0
+	// cost_price is managed only via /api/v1/channel/:id/cost-price
+	addChannelRequest.Channel.CostPrice = nil
 	keys := make([]string, 0)
 	switch addChannelRequest.Mode {
 	case "multi_to_single":
@@ -991,6 +995,10 @@ func UpdateChannel(c *gin.Context) {
 
 	// Always copy the original ChannelInfo so that fields like IsMultiKey and MultiKeySize are retained.
 	channel.ChannelInfo = originChannel.ChannelInfo
+	// owner_user_id is immutable through the general channel update API.
+	channel.OwnerUserId = originChannel.OwnerUserId
+	// cost_price is managed only via /api/v1/channel/:id/cost-price
+	channel.CostPrice = originChannel.CostPrice
 
 	if channelHasSensitiveChanges(&channel, originChannel, requestData) &&
 		!authz.Can(c.GetInt("id"), c.GetInt("role"), authz.ChannelSensitiveWrite) {
@@ -1428,6 +1436,9 @@ func CopyChannel(c *gin.Context) {
 	// clone channel
 	clone := *origin // shallow copy is sufficient as we will overwrite primitives
 	clone.Id = 0     // let DB auto-generate
+	// Admin copies are unowned; supplier ownership can only be assigned by the
+	// internal supplier create endpoint.
+	clone.OwnerUserId = 0
 	clone.CreatedTime = common.GetTimestamp()
 	clone.Name = origin.Name + suffix
 	clone.TestTime = 0

@@ -60,6 +60,11 @@ const defaultOperationsSettings: OperationsSettings = {
   'perf_metrics_setting.flush_interval': 5,
   'perf_metrics_setting.bucket_time': 'hour',
   'perf_metrics_setting.retention_days': 0,
+  'channel_selector_setting.enabled': false,
+  'channel_selector_setting.cost_settle_enabled': false,
+  'channel_selector_setting.explore_rate': 0.08,
+  'channel_selector_setting.explore_rate_cold': 0.15,
+  'channel_selector_setting.min_samples': 30,
 }
 
 export function OperationsSettings() {

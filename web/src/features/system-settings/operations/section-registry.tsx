@@ -26,6 +26,7 @@ import { UpdateCheckerSection } from '../maintenance/update-checker-section'
 import type { OperationsSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 import { ChannelDisableMonitoringSection } from './channel-disable-monitoring-section'
+import { ChannelSelectorSection } from './channel-selector-section'
 import { TTFTMonitoringSection } from './ttft-monitoring-section'
 
 const OPERATIONS_SECTIONS = [
@@ -75,6 +76,26 @@ const OPERATIONS_SECTIONS = [
     titleKey: 'Channel auto-disable alerts',
     build: (_settings: OperationsSettings) => (
       <ChannelDisableMonitoringSection />
+    ),
+  },
+  {
+    id: 'channel-selector',
+    titleKey: 'Multi-factor Channel Selector',
+    build: (settings: OperationsSettings) => (
+      <ChannelSelectorSection
+        defaultValues={{
+          'channel_selector_setting.enabled':
+            settings['channel_selector_setting.enabled'] ?? false,
+          'channel_selector_setting.cost_settle_enabled':
+            settings['channel_selector_setting.cost_settle_enabled'] ?? false,
+          'channel_selector_setting.explore_rate':
+            settings['channel_selector_setting.explore_rate'] ?? 0.08,
+          'channel_selector_setting.explore_rate_cold':
+            settings['channel_selector_setting.explore_rate_cold'] ?? 0.15,
+          'channel_selector_setting.min_samples':
+            settings['channel_selector_setting.min_samples'] ?? 30,
+        }}
+      />
     ),
   },
   {

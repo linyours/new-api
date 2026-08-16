@@ -76,12 +76,14 @@ var channelSensitiveFields = map[string]struct{}{
 // channelOperationalFields lists fields managed by operation endpoints instead
 // of the general channel edit endpoint.
 var channelOperationalFields = map[string]struct{}{
-	"status": {},
+	"status":     {},
+	"cost_price": {}, // /api/v1/channel/:id/cost-price
 }
 
 // channelReadOnlyFields lists server-managed/accounting fields that the general
 // channel edit endpoint must ignore even if a client sends them.
 var channelReadOnlyFields = map[string]struct{}{
+	"owner_user_id":        {},
 	"created_time":         {},
 	"test_time":            {},
 	"response_time":        {},
@@ -91,6 +93,9 @@ var channelReadOnlyFields = map[string]struct{}{
 }
 
 func clearChannelReadOnlyFields(channel *PatchChannel, requestData map[string]any) {
+	if _, ok := requestData["owner_user_id"]; ok {
+		channel.OwnerUserId = 0
+	}
 	if _, ok := requestData["created_time"]; ok {
 		channel.CreatedTime = 0
 	}

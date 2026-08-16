@@ -12,24 +12,27 @@ import (
 )
 
 type Token struct {
-	Id                 int            `json:"id"`
-	UserId             int            `json:"user_id" gorm:"index"`
-	Key                string         `json:"key" gorm:"type:varchar(128);uniqueIndex"`
-	Status             int            `json:"status" gorm:"default:1"`
-	Name               string         `json:"name" gorm:"index" `
-	CreatedTime        int64          `json:"created_time" gorm:"bigint"`
-	AccessedTime       int64          `json:"accessed_time" gorm:"bigint"`
-	ExpiredTime        int64          `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
-	RemainQuota        int            `json:"remain_quota" gorm:"default:0"`
-	UnlimitedQuota     bool           `json:"unlimited_quota"`
-	ModelLimitsEnabled bool           `json:"model_limits_enabled"`
-	ModelLimits        string         `json:"model_limits" gorm:"type:text"`
-	AllowIps           *string        `json:"allow_ips" gorm:"default:''"`
-	UsedQuota          int            `json:"used_quota" gorm:"default:0"` // used quota
-	Group              string         `json:"group" gorm:"default:''"`
-	CrossGroupRetry    bool           `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
-	AutoGroups         string         `json:"-" gorm:"type:text"`
-	DeletedAt          gorm.DeletedAt `gorm:"index"`
+	Id                 int     `json:"id"`
+	UserId             int     `json:"user_id" gorm:"index"`
+	Key                string  `json:"key" gorm:"type:varchar(128);uniqueIndex"`
+	Status             int     `json:"status" gorm:"default:1"`
+	Name               string  `json:"name" gorm:"index" `
+	CreatedTime        int64   `json:"created_time" gorm:"bigint"`
+	AccessedTime       int64   `json:"accessed_time" gorm:"bigint"`
+	ExpiredTime        int64   `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
+	RemainQuota        int     `json:"remain_quota" gorm:"default:0"`
+	UnlimitedQuota     bool    `json:"unlimited_quota"`
+	ModelLimitsEnabled bool    `json:"model_limits_enabled"`
+	ModelLimits        string  `json:"model_limits" gorm:"type:text"`
+	AllowIps           *string `json:"allow_ips" gorm:"default:''"`
+	UsedQuota          int     `json:"used_quota" gorm:"default:0"` // used quota
+	Group              string  `json:"group" gorm:"default:''"`
+	CrossGroupRetry    bool    `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
+	AutoGroups         string  `json:"-" gorm:"type:text"`
+	// RoutingMaxCostPriceByType JSON map capping channel cost_price by ChannelType.
+	// Managed only via /api/v1/token/:id/routing-max-cost-price (not Add/Update token).
+	RoutingMaxCostPriceByType string         `json:"-" gorm:"type:text"`
+	DeletedAt                 gorm.DeletedAt `gorm:"index"`
 }
 
 func (token *Token) GetAutoGroups() ([]string, error) {
@@ -54,6 +57,55 @@ func (token *Token) SetAutoGroups(groups []string) error {
 	}
 	token.AutoGroups = string(data)
 	return nil
+}
+
+// GetRoutingMaxCostPriceByType parses the token-level routing cost caps.
+func (token *Token) GetRoutingMaxCostPriceByType() map[string]float64 {
+	if token == nil || strings.TrimSpace(token.RoutingMaxCostPriceByType) == "" {
+		return nil
+	}
+	var out map[string]float64
+	if err := common.UnmarshalJsonStr(token.RoutingMaxCostPriceByType, &out); err != nil {
+		return nil
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// SetRoutingMaxCostPriceByType stores the normalized map as JSON (nil/empty clears).
+func (token *Token) SetRoutingMaxCostPriceByType(byType map[string]float64) error {
+	if token == nil {
+		return errors.New("token is nil")
+	}
+	if len(byType) == 0 {
+		token.RoutingMaxCostPriceByType = ""
+		return nil
+	}
+	data, err := common.Marshal(byType)
+	if err != nil {
+		return err
+	}
+	token.RoutingMaxCostPriceByType = string(data)
+	return nil
+}
+
+// UpdateRoutingMaxCostPriceByType persists only the routing max-cost column and refreshes cache.
+func (token *Token) UpdateRoutingMaxCostPriceByType() (err error) {
+	if token == nil || token.Id == 0 {
+		return errors.New("id 为空！")
+	}
+	err = DB.Model(token).Where("id = ?", token.Id).UpdateColumn("routing_max_cost_price_by_type", token.RoutingMaxCostPriceByType).Error
+	if shouldUpdateRedis(true, err) {
+		if cacheErr := cacheSetToken(*token); cacheErr != nil {
+			common.SysLog("failed to update token cache: " + cacheErr.Error())
+			if deleteErr := cacheDeleteToken(token.Key); deleteErr != nil {
+				common.SysLog("failed to invalidate token cache after update: " + deleteErr.Error())
+			}
+		}
+	}
+	return err
 }
 
 func (token *Token) Clean() {

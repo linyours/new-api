@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	chselector "github.com/QuantumNous/new-api/pkg/channel_selector"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -444,6 +445,10 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		extraContent = append(extraContent, "上游没有返回计费信息，无法扣费（可能是上游超时）")
 		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
 	} else {
+		// --- custom: channel_selector (fork) ---
+		// Pre-consume used model price; override settle quota with channel cost_price when enabled.
+		summary.Quota = ApplyChannelCostPriceSettle(relayInfo, summary.Quota)
+		// --- end custom ---
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
 	}
@@ -520,6 +525,14 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	if tieredBillingApplied {
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
+
+	// --- custom: channel_selector (fork) ---
+	if applied, costPrice := ChannelCostSettleApplied(relayInfo); applied {
+		chselector.AnnotateSettleOther(other, relayInfo.ChannelId, true, costPrice)
+	} else {
+		chselector.AnnotateSettleOther(other, relayInfo.ChannelId, false, -1)
+	}
+	// --- end custom ---
 
 	attachQuotaSaturation(ctx, relayInfo, other)
 

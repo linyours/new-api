@@ -22,6 +22,7 @@ import (
 
 type Channel struct {
 	Id                 int     `json:"id"`
+	OwnerUserId        int     `json:"owner_user_id" gorm:"index;default:0"`
 	Type               int     `json:"type" gorm:"default:0"`
 	Key                string  `json:"key" gorm:"not null"`
 	OpenAIOrganization *string `json:"openai_organization"`
@@ -54,6 +55,14 @@ type Channel struct {
 	ChannelInfo ChannelInfo `json:"channel_info" gorm:"type:json"`
 
 	OtherSettings string `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
+
+	// --- custom: channel_selector (fork) ---
+	// CostPrice is a channel settle multiplier (float). Used for multi-factor
+	// selection scoring and optional settle: final_quota = model_quota * cost_price.
+	// Never used for pre-consume. nil or <0 means unset.
+	// Managed only via /api/v1/channel/:id/cost-price (not Add/Update channel).
+	CostPrice *float64 `json:"cost_price" gorm:"default:null"`
+	// --- end custom ---
 
 	// cache info
 	Keys []string `json:"-" gorm:"-"`
@@ -423,6 +432,41 @@ func GetChannelById(id int, selectAll bool) (*Channel, error) {
 	return channel, nil
 }
 
+// GetChannelByIdAndOwner returns a supplier-owned channel. Legacy/admin
+// channels have owner_user_id=0 and are never returned by this query.
+func GetChannelByIdAndOwner(id int, ownerUserId int, selectAll bool) (*Channel, error) {
+	if id <= 0 || ownerUserId <= 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	channel := &Channel{}
+	query := DB.Where("id = ? AND owner_user_id = ?", id, ownerUserId)
+	if !selectAll {
+		query = query.Omit("key")
+	}
+	if err := query.First(channel).Error; err != nil {
+		return nil, err
+	}
+	return channel, nil
+}
+
+// GetChannelsByOwner returns one page of supplier-owned channels and the total.
+// Keys are always omitted from the query result.
+func GetChannelsByOwner(ownerUserId int, offset int, limit int) ([]*Channel, int64, error) {
+	if ownerUserId <= 0 {
+		return nil, 0, gorm.ErrRecordNotFound
+	}
+	var total int64
+	query := DB.Model(&Channel{}).Where("owner_user_id = ?", ownerUserId)
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var channels []*Channel
+	if err := query.Omit("key").Order("id DESC").Offset(offset).Limit(limit).Find(&channels).Error; err != nil {
+		return nil, 0, err
+	}
+	return channels, total, nil
+}
+
 func BatchInsertChannels(channels []Channel) error {
 	if len(channels) == 0 {
 		return nil
@@ -493,6 +537,23 @@ func (channel *Channel) GetWeight() int {
 	}
 	return int(*channel.Weight)
 }
+
+// --- custom: channel_selector (fork) ---
+
+// GetCostPrice returns channel wholesale price; unset returns -1.
+func (channel *Channel) GetCostPrice() float64 {
+	if channel == nil || channel.CostPrice == nil || *channel.CostPrice < 0 {
+		return -1
+	}
+	return *channel.CostPrice
+}
+
+// HasCostPrice reports whether a valid cost_price is configured.
+func (channel *Channel) HasCostPrice() bool {
+	return channel.GetCostPrice() >= 0
+}
+
+// --- end custom ---
 
 func (channel *Channel) GetBaseURL() string {
 	if channel.BaseURL == nil {
@@ -576,6 +637,92 @@ func (channel *Channel) Update() error {
 	DB.Model(channel).First(channel, "id = ?", channel.Id)
 	err = channel.UpdateAbilities(nil)
 	return err
+}
+
+// UpdateSupplierOwnedChannel updates the supplier field whitelist while
+// enforcing ownership in the UPDATE statement itself. Ability changes are
+// committed in the same transaction.
+func UpdateSupplierOwnedChannel(channel *Channel, ownerUserId int) error {
+	if channel == nil || channel.Id <= 0 || ownerUserId <= 0 {
+		return gorm.ErrRecordNotFound
+	}
+	tx := DB.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	result := tx.Model(&Channel{}).
+		Where("id = ? AND owner_user_id = ?", channel.Id, ownerUserId).
+		Updates(map[string]any{
+			"name":          channel.Name,
+			"type":          channel.Type,
+			"key":           channel.Key,
+			"base_url":      channel.BaseURL,
+			"models":        channel.Models,
+			"group":         channel.Group,
+			"model_mapping": channel.ModelMapping,
+			"test_model":    channel.TestModel,
+			"auto_ban":      channel.AutoBan,
+		})
+	if result.Error != nil {
+		tx.Rollback()
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		tx.Rollback()
+		return gorm.ErrRecordNotFound
+	}
+	if err := channel.UpdateAbilities(tx); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit().Error
+}
+
+// UpdateSupplierOwnedChannelStatus updates a whole channel status while
+// enforcing ownership in the write query and synchronizing abilities.
+func UpdateSupplierOwnedChannelStatus(channelId int, ownerUserId int, status int, reason string) (bool, error) {
+	channel, err := GetChannelByIdAndOwner(channelId, ownerUserId, true)
+	if err != nil {
+		return false, err
+	}
+	if channel.Status == status {
+		return false, nil
+	}
+	info := channel.GetOtherInfo()
+	info["status_reason"] = reason
+	info["status_time"] = common.GetTimestamp()
+	channel.SetOtherInfo(info)
+
+	tx := DB.Begin()
+	if tx.Error != nil {
+		return false, tx.Error
+	}
+	result := tx.Model(&Channel{}).
+		Where("id = ? AND owner_user_id = ?", channelId, ownerUserId).
+		Updates(map[string]any{
+			"status":     status,
+			"other_info": channel.OtherInfo,
+		})
+	if result.Error != nil {
+		tx.Rollback()
+		return false, result.Error
+	}
+	if result.RowsAffected == 0 {
+		tx.Rollback()
+		return false, gorm.ErrRecordNotFound
+	}
+	if err := tx.Model(&Ability{}).
+		Where("channel_id = ?", channelId).
+		Update("enabled", status == common.ChannelStatusEnabled).Error; err != nil {
+		tx.Rollback()
+		return false, err
+	}
+	if err := tx.Commit().Error; err != nil {
+		return false, err
+	}
+	CacheUpdateChannelStatus(channelId, status)
+	notifyChannelStatusChanged(channelId, status)
+	return true, nil
 }
 
 func (channel *Channel) UpdateResponseTime(responseTime int64) {

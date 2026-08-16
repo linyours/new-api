@@ -8,7 +8,10 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/logger"
+	chselector "github.com/QuantumNous/new-api/pkg/channel_selector"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -105,11 +108,23 @@ func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
 	return channelQuery, nil
 }
 
-func GetChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+func GetChannel(group string, modelName string, retry int, requestPath string, exclude map[int]struct{}, maxCostByType map[string]float64) (*Channel, error) {
+	// --- custom: channel_selector (fork) ---
+	if chselector.Enabled() {
+		return getChannelWithSelector(group, modelName, requestPath, exclude, maxCostByType)
+	}
+	if chselector.DebugLoggingEnabled() {
+		logger.LogInfo(nil, fmt.Sprintf(
+			"[channel_selector] model=%s path=db_priority_weight reason=selector_disabled",
+			modelName,
+		))
+	}
+	// --- end custom ---
+
 	var abilities []Ability
 
 	var err error = nil
-	channelQuery, err := getChannelQuery(group, model, retry)
+	channelQuery, err := getChannelQuery(group, modelName, retry)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +136,11 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 	if err != nil {
 		return nil, err
 	}
-	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, model)
+	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, modelName)
+	abilities, err = filterAbilitiesByMaxCost(abilities, maxCostByType)
+	if err != nil {
+		return nil, err
+	}
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one
@@ -145,6 +164,113 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 	err = DB.First(&channel, "id = ?", channel.Id).Error
 	return &channel, err
 }
+
+// --- custom: channel_selector (fork) ---
+
+// getChannelWithSelector loads all enabled abilities for group+model (no priority
+// tier), then picks via multi-factor scoring. Used when memory cache is off.
+func getChannelWithSelector(group string, modelName string, requestPath string, exclude map[int]struct{}, maxCostByType map[string]float64) (*Channel, error) {
+	var abilities []Ability
+	err := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, modelName, true).
+		Find(&abilities).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(abilities) == 0 {
+		normalized := ratio_setting.FormatMatchingModelName(modelName)
+		if normalized != modelName {
+			err = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, normalized, true).
+				Find(&abilities).Error
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, modelName)
+	if len(abilities) == 0 {
+		return nil, nil
+	}
+
+	seen := make(map[int]struct{}, len(abilities))
+	channelIDs := make([]int, 0, len(abilities))
+	for _, a := range abilities {
+		if _, ok := seen[a.ChannelId]; ok {
+			continue
+		}
+		seen[a.ChannelId] = struct{}{}
+		channelIDs = append(channelIDs, a.ChannelId)
+	}
+
+	var channels []*Channel
+	if err := DB.Where("id IN ?", channelIDs).Find(&channels).Error; err != nil {
+		return nil, err
+	}
+	views := make([]chselector.ChannelView, 0, len(channels))
+	id2ch := make(map[int]*Channel, len(channels))
+	for _, ch := range channels {
+		if ch == nil {
+			continue
+		}
+		views = append(views, chselector.ChannelView{
+			ID:           ch.Id,
+			Type:         ch.Type,
+			CostPrice:    ch.GetCostPrice(),
+			ResponseTime: ch.ResponseTime,
+		})
+		id2ch[ch.Id] = ch
+	}
+	picked := chselector.Pick(views, modelName, exclude, chselector.DefaultConfig(), maxCostByType)
+	if picked == 0 {
+		return nil, nil
+	}
+	if ch, ok := id2ch[picked]; ok {
+		return ch, nil
+	}
+	return nil, fmt.Errorf("channel not found: %d", picked)
+}
+
+// filterAbilitiesByMaxCost removes abilities whose channel cost_price exceeds the
+// user's per-type cap. Loads each distinct channel once (not per ability row).
+func filterAbilitiesByMaxCost(abilities []Ability, maxCostByType map[string]float64) ([]Ability, error) {
+	if len(abilities) == 0 || len(maxCostByType) == 0 {
+		return abilities, nil
+	}
+	ids := make([]int, 0, len(abilities))
+	seen := make(map[int]struct{}, len(abilities))
+	for _, a := range abilities {
+		if _, ok := seen[a.ChannelId]; ok {
+			continue
+		}
+		seen[a.ChannelId] = struct{}{}
+		ids = append(ids, a.ChannelId)
+	}
+	var channels []*Channel
+	if err := DB.Select("id", "type", "cost_price").Where("id IN ?", ids).Find(&channels).Error; err != nil {
+		return nil, err
+	}
+	blocked := make(map[int]struct{}, len(channels))
+	for _, ch := range channels {
+		if ch == nil {
+			continue
+		}
+		if chselector.ExceedsMaxCostPrice(maxCostByType, ch.Type, ch.GetCostPrice()) {
+			blocked[ch.Id] = struct{}{}
+		}
+	}
+	if len(blocked) == 0 {
+		return abilities, nil
+	}
+	filtered := make([]Ability, 0, len(abilities))
+	for _, a := range abilities {
+		if _, skip := blocked[a.ChannelId]; skip {
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	return filtered, nil
+}
+
+// --- end custom ---
 
 // filterAbilitiesByRequestPathAndModel restricts candidates by request path and
 // model for the DB (non-memory-cache) selection path. Only Advanced Custom

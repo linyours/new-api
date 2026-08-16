@@ -117,7 +117,9 @@ export function NotificationTab({ profile, onUpdate }: NotificationTabProps) {
   const handleSave = async () => {
     try {
       setLoading(true)
-      const response = await updateUserSettings(settings)
+      const response = await updateUserSettings({
+        ...settings,
+      })
 
       if (response.success) {
         toast.success(t('Settings updated successfully'))

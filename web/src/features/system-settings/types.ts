@@ -366,6 +366,11 @@ export type OperationsSettings = {
   'perf_metrics_setting.flush_interval': number
   'perf_metrics_setting.bucket_time': 'hour' | 'minute' | '5min'
   'perf_metrics_setting.retention_days': number
+  'channel_selector_setting.enabled': boolean
+  'channel_selector_setting.cost_settle_enabled': boolean
+  'channel_selector_setting.explore_rate': number
+  'channel_selector_setting.explore_rate_cold': number
+  'channel_selector_setting.min_samples': number
 }
 
 export type MonitorNotifyType = 'root_notify' | 'webhook'
