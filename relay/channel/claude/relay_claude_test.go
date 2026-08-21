@@ -1,17 +1,36 @@
 package claude
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/dto"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	relaytypes "github.com/QuantumNous/new-api/types"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func commonPointer[T any](value T) *T {
 	return &value
+}
+
+func TestHandleStreamResponseDataForwardsClaudeErrorEvent(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+	info := &relaycommon.RelayInfo{RelayFormat: relaytypes.RelayFormatClaude}
+	claudeInfo := &ClaudeResponseInfo{Usage: &dto.Usage{}}
+	data := `{"type":"error","error":{"type":"invalid_request_error","message":"Provider returned no content"},"provider_meta":{"trace_id":"trace_123"}}`
+
+	err := HandleStreamResponseData(c, info, claudeInfo, data)
+
+	require.NotNil(t, err)
+	assert.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
+	assert.Equal(t, "event: error\ndata: "+data+"\n\n\n", recorder.Body.String())
 }
 
 func TestResponseOpenAI2ClaudeToolUseInputIsObject(t *testing.T) {
