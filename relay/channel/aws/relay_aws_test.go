@@ -15,6 +15,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream/eventstreamapi"
@@ -182,12 +183,17 @@ func TestDoAwsClientRequest_AppliesRuntimeHeaderOverrideToAnthropicBeta(t *testi
 	require.Equal(t, []any{"computer-use-2025-01-24"}, values)
 }
 
-func TestNewAwsInvokeContextInheritsParent(t *testing.T) {
-	originalRelayTimeout := common.RelayTimeout
+func withRelayTimeoutSeconds(t *testing.T, seconds int) {
+	t.Helper()
+	setting := operation_setting.GetGeneralSetting()
+	original := setting.RelayTimeoutSeconds
+	setting.RelayTimeoutSeconds = seconds
 	t.Cleanup(func() {
-		common.RelayTimeout = originalRelayTimeout
+		setting.RelayTimeoutSeconds = original
 	})
+}
 
+func TestNewAwsInvokeContextInheritsParent(t *testing.T) {
 	tests := []struct {
 		name         string
 		relayTimeout int
@@ -199,7 +205,7 @@ func TestNewAwsInvokeContextInheritsParent(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			common.RelayTimeout = test.relayTimeout
+			withRelayTimeoutSeconds(t, test.relayTimeout)
 			parent, cancelParent := context.WithCancel(context.Background())
 			invokeContext, cancelInvoke := newAwsInvokeContext(parent)
 			defer cancelInvoke()
@@ -252,11 +258,7 @@ func TestNewAwsInvokeErrorSkipsRetryOnlyForClientCancellation(t *testing.T) {
 }
 
 func TestAwsHandlersCancelSdkRequestAndSkipRetry(t *testing.T) {
-	originalRelayTimeout := common.RelayTimeout
-	common.RelayTimeout = 0
-	t.Cleanup(func() {
-		common.RelayTimeout = originalRelayTimeout
-	})
+	withRelayTimeoutSeconds(t, 0)
 
 	tests := []struct {
 		name    string
@@ -320,11 +322,7 @@ func TestAwsHandlersCancelSdkRequestAndSkipRetry(t *testing.T) {
 }
 
 func TestAwsStreamHandlerUsesFinalUpstreamUsage(t *testing.T) {
-	originalRelayTimeout := common.RelayTimeout
-	common.RelayTimeout = 0
-	t.Cleanup(func() {
-		common.RelayTimeout = originalRelayTimeout
-	})
+	withRelayTimeoutSeconds(t, 0)
 
 	events := []string{
 		`{"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","model":"claude-test","content":[],"usage":{"input_tokens":100,"output_tokens":1}}}`,
@@ -358,11 +356,7 @@ func TestAwsStreamHandlerUsesFinalUpstreamUsage(t *testing.T) {
 }
 
 func TestAwsStreamHandlerStopsAtClientCancellationAndKeepsPartialBillingUsage(t *testing.T) {
-	originalRelayTimeout := common.RelayTimeout
-	common.RelayTimeout = 0
-	t.Cleanup(func() {
-		common.RelayTimeout = originalRelayTimeout
-	})
+	withRelayTimeoutSeconds(t, 0)
 
 	requestContext, cancelRequest := context.WithCancel(context.Background())
 	t.Cleanup(cancelRequest)

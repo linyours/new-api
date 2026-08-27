@@ -95,6 +95,11 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
     ADMIN_PERMISSION_RESOURCES.CHANNEL,
     ADMIN_PERMISSION_ACTIONS.SENSITIVE_WRITE
   )
+  const canConfigureLimits = hasPermission(
+    currentUser,
+    ADMIN_PERMISSION_RESOURCES.CHANNEL,
+    ADMIN_PERMISSION_ACTIONS.WRITE
+  )
 
   const handleEdit = () => {
     setCurrentRow(channel)
@@ -141,6 +146,11 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const handleManageKeys = () => {
     setCurrentRow(channel)
     setOpen('multi-key-manage')
+  }
+
+  const handleConfigureKeyLimits = () => {
+    setCurrentRow(channel)
+    setOpen('key-limits')
   }
 
   const handleToggleStatus = async (
@@ -358,6 +368,17 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
               {t('Manage Keys')}
               <DropdownMenuShortcut>
                 <Key size={16} />
+              </DropdownMenuShortcut>
+            </DropdownMenuItem>
+          )}
+          {!isMultiKey && (
+            <DropdownMenuItem
+              disabled={!canConfigureLimits}
+              onClick={canConfigureLimits ? handleConfigureKeyLimits : undefined}
+            >
+              {t('Configure key limits')}
+              <DropdownMenuShortcut>
+                <Gauge size={16} />
               </DropdownMenuShortcut>
             </DropdownMenuItem>
           )}

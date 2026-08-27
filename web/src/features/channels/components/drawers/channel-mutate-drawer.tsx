@@ -133,8 +133,10 @@ import {
   getChannel,
   getChannelKey,
   getGroups,
+  getMultiKeyStatus,
   getPrefillGroups,
   refreshCodexCredential,
+  updateChannelKeyLimits,
 } from '../../api'
 import {
   ADD_MODE_OPTIONS,
@@ -166,12 +168,14 @@ import {
   findMissingModelsInMapping,
   validateModelMappingJson,
   hasAdvancedSettingsErrors,
+  parseModelRpmLimits,
+  unusedModelName,
 } from '../../lib'
 import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
 } from '../../lib/status-code-risk-guard'
-import type { Channel } from '../../types'
+import type { Channel, KeyStatus } from '../../types'
 import { useChannels } from '../channels-provider'
 import { AdvancedCustomEditorDialog } from '../dialogs/advanced-custom-editor-dialog'
 import { FetchModelsDialog } from '../dialogs/fetch-models-dialog'
@@ -182,6 +186,10 @@ import {
 import { ParamOverrideEditorDialog } from '../dialogs/param-override-editor-dialog'
 import { StatusCodeRiskDialog } from '../dialogs/status-code-risk-dialog'
 import { ModelMappingEditor } from '../model-mapping-editor'
+import {
+  ModelRpmLimitsEditor,
+  type ModelRpmLimitRow,
+} from '../model-rpm-limits-editor'
 import {
   ChannelAdvancedSection,
   ChannelApiAccessSection,
@@ -652,6 +660,9 @@ export function ChannelMutateDrawer({
     useState(false)
   const [clipboardConnectionInfo, setClipboardConnectionInfo] =
     useState<ChannelConnectionInfo | null>(null)
+  const [modelRpmRows, setModelRpmRows] = useState<ModelRpmLimitRow[]>([])
+  const modelRpmRowIdRef = useRef(0)
+  const loadedChannelKeyRef = useRef<KeyStatus | null>(null)
 
   const isEditing = Boolean(currentRow)
   const channelId = currentRow?.id ?? null
@@ -707,6 +718,35 @@ export function ChannelMutateDrawer({
   // Check if this is a multi-key channel
   const isMultiKeyChannel =
     isEditing && channelData?.data?.channel_info?.is_multi_key === true
+  const isListedAsMultiKey =
+    currentRow?.channel_info?.is_multi_key === true || isMultiKeyChannel
+
+  const { data: channelKeyStatusData, isLoading: isChannelKeyStatusLoading } =
+    useQuery({
+      queryKey: ['channel-key-status', channelId],
+      queryFn: () => getMultiKeyStatus(channelId || 0, 1, 1),
+      enabled: Boolean(open && isEditing && channelId && !isListedAsMultiKey),
+    })
+
+  useEffect(() => {
+    if (!open) {
+      setModelRpmRows([])
+      loadedChannelKeyRef.current = null
+      return
+    }
+    const key = channelKeyStatusData?.data?.keys?.[0]
+    if (!key || loadedChannelKeyRef.current?.id === key.id) return
+    loadedChannelKeyRef.current = key
+    setModelRpmRows(
+      Object.entries(key.model_rpm_limits || {})
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([model, rpm]) => ({
+          id: ++modelRpmRowIdRef.current,
+          model,
+          rpm: String(rpm),
+        }))
+    )
+  }, [channelKeyStatusData, open])
 
   // Form setup
   const form = useForm<ChannelFormValues>({
@@ -1000,12 +1040,13 @@ export function ChannelMutateDrawer({
     ? 'error'
     : 'idle'
   const advancedSummary = advancedHaveErrors ? t('Error') : undefined
-  const routingStrategyConfigured = Boolean(
-    currentPriority ||
-    currentWeight ||
-    currentTestModel?.trim() ||
-    (currentAutoBan ?? 1) !== 1
-  )
+      const routingStrategyConfigured = Boolean(
+        currentPriority ||
+        currentWeight ||
+        currentTestModel?.trim() ||
+        (currentAutoBan ?? 1) !== 1 ||
+        modelRpmRows.length > 0
+      )
   const internalNotesConfigured = Boolean(
     currentTag?.trim() || currentRemark?.trim()
   )
@@ -1687,6 +1728,24 @@ export function ChannelMutateDrawer({
 
       // Normalize models array
       const normalizedModels = parseModelsString(data.models || '')
+      const loadedChannelKey = loadedChannelKeyRef.current
+      const parsedModelRpmLimits =
+        isEditing && !isMultiKeyChannel && loadedChannelKey
+          ? parseModelRpmLimits(modelRpmRows)
+          : undefined
+      if (
+        isEditing &&
+        !isMultiKeyChannel &&
+        loadedChannelKey &&
+        parsedModelRpmLimits === null
+      ) {
+        toast.error(
+          t(
+            'RPM values must be non-negative integers, model names must be unique, and the USD limit must be a non-negative number.'
+          )
+        )
+        return
+      }
 
       // Check for missing models in model_mapping
       if (hasModelMapping) {
@@ -1720,9 +1779,37 @@ export function ChannelMutateDrawer({
       }
 
       await channelMutation.mutateAsync(data)
+
+      if (
+        isEditing &&
+        !isMultiKeyChannel &&
+        loadedChannelKey &&
+        parsedModelRpmLimits &&
+        currentRow
+      ) {
+        try {
+          const response = await updateChannelKeyLimits(
+            currentRow.id,
+            loadedChannelKey.id,
+            loadedChannelKey.rpm_limit ?? null,
+            loadedChannelKey.quota_limit ?? null,
+            parsedModelRpmLimits
+          )
+          if (!response.success) {
+            toast.error(response.message || t('Operation failed'))
+          }
+        } catch (error: unknown) {
+          toast.error(
+            error instanceof Error ? error.message : t('Operation failed')
+          )
+        }
+      }
     },
     [
       isEditing,
+      isMultiKeyChannel,
+      modelRpmRows,
+      currentRow,
       sensitiveLocked,
       form,
       confirmMissingModelMappings,
@@ -3688,6 +3775,125 @@ export function ChannelMutateDrawer({
                               />
                             </div>
 
+                            <div className='grid gap-4 sm:grid-cols-2'>
+                              <FormField
+                                control={form.control}
+                                name='key_rpm_limit'
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>
+                                      {t('Per-key RPM limit')}
+                                    </FormLabel>
+                                    <FormControl>
+                                      <Input
+                                        type='number'
+                                        min={0}
+                                        step={1}
+                                        placeholder='0'
+                                        {...field}
+                                        onChange={(event) =>
+                                          field.onChange(
+                                            Number(event.target.value)
+                                          )
+                                        }
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'Maximum requests per minute for each key. 0 means unlimited.'
+                                      )}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+
+                              <FormField
+                                control={form.control}
+                                name='key_quota_limit'
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>
+                                      {t('Per-key USD limit')}
+                                    </FormLabel>
+                                    <FormControl>
+                                      <Input
+                                        type='number'
+                                        min={0}
+                                        step='any'
+                                        placeholder='0'
+                                        {...field}
+                                        onChange={(event) =>
+                                          field.onChange(
+                                            Number(event.target.value)
+                                          )
+                                        }
+                                      />
+                                    </FormControl>
+                                    <FormDescription>
+                                      {t(
+                                        'Maximum cumulative USD spend for each key. 0 means unlimited.'
+                                      )}
+                                    </FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+                            </div>
+
+                            {isEditing && isMultiKeyChannel ? (
+                              <Alert>
+                                <AlertDescription className='flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'>
+                                  <span>
+                                    {t(
+                                      'For multi-key channels, configure per-model RPM on each key in Manage Keys.'
+                                    )}
+                                  </span>
+                                  <Button
+                                    type='button'
+                                    variant='outline'
+                                    size='sm'
+                                    className='shrink-0'
+                                    onClick={() => setOpen('multi-key-manage')}
+                                  >
+                                    {t('Open Manage Keys')}
+                                  </Button>
+                                </AlertDescription>
+                              </Alert>
+                            ) : null}
+                            {isEditing && !isMultiKeyChannel ? (
+                              <ModelRpmLimitsEditor
+                                rows={modelRpmRows}
+                                models={currentModelsArray}
+                                disabled={
+                                  sensitiveLocked || isChannelKeyStatusLoading
+                                }
+                                datalistId='channel-drawer-model-rpm-options'
+                                onChange={setModelRpmRows}
+                                onAdd={() => {
+                                  const model = unusedModelName(
+                                    currentModelsArray,
+                                    modelRpmRows
+                                  )
+                                  setModelRpmRows((rows) => [
+                                    ...rows,
+                                    {
+                                      id: ++modelRpmRowIdRef.current,
+                                      model,
+                                      rpm: '',
+                                    },
+                                  ])
+                                }}
+                              />
+                            ) : null}
+                            {!isEditing ? (
+                              <p className='text-muted-foreground text-xs'>
+                                {t(
+                                  'Save the channel first, then edit Advanced Settings to configure per-model RPM limits.'
+                                )}
+                              </p>
+                            ) : null}
+
                             <FormField
                               control={form.control}
                               name='test_model'
@@ -4233,9 +4439,7 @@ export function ChannelMutateDrawer({
                                         <SelectValue />
                                       </SelectTrigger>
                                     </FormControl>
-                                    <SelectContent
-                                      alignItemWithTrigger={false}
-                                    >
+                                    <SelectContent alignItemWithTrigger={false}>
                                       <SelectGroup>
                                         <SelectItem value='auto'>
                                           {t('Auto')}

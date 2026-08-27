@@ -28,6 +28,7 @@ import {
   getUserTaskLogs,
 } from '../api'
 import {
+  LOG_TYPE_ENUM,
   LOG_TYPES,
   DISPLAYABLE_LOG_TYPES,
   TIMING_LOG_TYPES,
@@ -262,7 +263,7 @@ export async function fetchLogsByCategory(
   const { logCategory, isAdmin, page, pageSize, searchParams, columnFilters } =
     config
 
-  if (logCategory === 'common') {
+  if (logCategory === 'common' || logCategory === 'error') {
     const params = buildApiParams({
       page,
       pageSize,
@@ -270,6 +271,9 @@ export async function fetchLogsByCategory(
       columnFilters,
       isAdmin,
     })
+    if (logCategory === 'error') {
+      params.type = LOG_TYPE_ENUM.ERROR
+    }
     return isAdmin ? await getAllLogs(params) : await getUserLogs(params)
   }
 

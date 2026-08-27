@@ -32,6 +32,8 @@ func InitChannelCache() {
 	newChannel2advancedCustomConfig := make(map[int]*dto.AdvancedCustomConfig)
 	var channels []*Channel
 	DB.Find(&channels)
+	var channelKeys []*ChannelKey
+	DB.Find(&channelKeys)
 	for _, channel := range channels {
 		newChannelId2channel[channel.Id] = channel
 		if channel.Type == constant.ChannelTypeAdvancedCustom {
@@ -95,6 +97,9 @@ func InitChannelCache() {
 	channelsIDM = newChannelId2channel
 	channel2advancedCustomConfig = newChannel2advancedCustomConfig
 	channelSyncLock.Unlock()
+	// Key rows use their own immutable snapshot because quota settlement may
+	// invalidate one key without rebuilding the much larger routing index.
+	InitChannelKeyCache(channelKeys)
 	// Lock ordering: InvalidatePricingCache acquires updatePricingLock, and
 	// GetPricing (holding updatePricingLock) nests channelSyncLock.RLock via
 	// loadPricingAdvancedCustomConfigs. channelSyncLock MUST be released before
@@ -112,9 +117,17 @@ func SyncChannelCache(frequency int) {
 }
 
 func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+	return GetRandomSatisfiedChannelExcluding(group, model, retry, requestPath, nil)
+}
+
+// GetRandomSatisfiedChannelExcluding preserves the existing priority/weight
+// semantics while removing channels that proved temporarily unavailable during
+// the current request (for example, all of their keys reached RPM or quota).
+// The exclusion set is request-local and never mutates the shared routing cache.
+func GetRandomSatisfiedChannelExcluding(group string, model string, retry int, requestPath string, excluded map[int]struct{}) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannel(group, model, retry, requestPath)
+		return GetChannelExcluding(group, model, retry, requestPath, excluded)
 	}
 
 	channelSyncLock.RLock()
@@ -122,11 +135,13 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 
 	// First, try to find channels with the exact model name.
 	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
+	channels = excludeChannelIds(channels, excluded)
 
 	// If no channels found, try to find channels with the normalized model name.
 	if len(channels) == 0 {
 		normalizedModel := ratio_setting.FormatMatchingModelName(model)
 		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
+		channels = excludeChannelIds(channels, excluded)
 	}
 
 	if len(channels) == 0 {
@@ -206,6 +221,23 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 	}
 	// return null if no channel is not found
 	return nil, errors.New("channel not found")
+}
+
+func excludeChannelIds(channels []int, excluded map[int]struct{}) []int {
+	if len(channels) == 0 {
+		return channels
+	}
+	filtered := make([]int, 0, len(channels))
+	for _, channelId := range channels {
+		if _, skip := excluded[channelId]; skip {
+			continue
+		}
+		if available, known := CacheChannelKeyAvailability(channelId); known && !available {
+			continue
+		}
+		filtered = append(filtered, channelId)
+	}
+	return filtered
 }
 
 // filterChannelsByRequestPathAndModel restricts candidates by request path and

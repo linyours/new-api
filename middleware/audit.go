@@ -93,7 +93,9 @@ var auditRouteActions = map[string]string{
 	"POST /api/subscription/admin/bind":     "subscription.bind",
 
 	// 日志
-	"POST /api/system-task/log-cleanup": "log.cleanup_start",
+	"POST /api/system-task/log-cleanup":        "log.cleanup_start",
+	"POST /api/system-task/error-log-truncate": "error_log.truncate_start",
+	"POST /api/system-task/error-log-retain":   "error_log.retain_start",
 }
 
 // beginAdminAudit 在管理/root 写操作进入 handler 前包装 ResponseWriter，

@@ -46,6 +46,8 @@ export function useColumnsByCategory(
       return drawingColumns
     case 'task':
       return taskColumns
+    case 'error':
+      return commonColumns
     default:
       return commonColumns
   }

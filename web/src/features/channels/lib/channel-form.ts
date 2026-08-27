@@ -33,6 +33,11 @@ import {
   stringifyAdvancedCustomConfig,
   validateAdvancedCustomConfig,
 } from './advanced-custom'
+import {
+  channelKeyQuotaUnitsToUSD,
+  channelKeyUSDToQuotaUnits,
+  isValidChannelKeyUSDLimit,
+} from './key-quota-usd'
 
 // ============================================================================
 // Form Validation Schema
@@ -211,6 +216,12 @@ export const channelFormSchema = z
       ),
     priority: z.number().optional(),
     weight: z.number().optional(),
+    key_rpm_limit: z.number().int().min(0).optional(),
+    key_quota_limit: z
+      .number()
+      .min(0)
+      .refine(isValidChannelKeyUSDLimit)
+      .optional(),
     test_model: z.string().optional(),
     auto_ban: z.number().optional(),
     status: z.number(),
@@ -409,6 +420,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   model_mapping: '',
   priority: 0,
   weight: 0,
+  key_rpm_limit: 0,
+  key_quota_limit: 0,
   test_model: '',
   auto_ban: 1,
   status: CHANNEL_STATUS.ENABLED,
@@ -487,8 +500,7 @@ export function transformChannelToFormDefaults(
         thinking_to_content: parsed.thinking_to_content || false,
         proxy: parsed.proxy || '',
         http_protocol: protocol,
-        http2_connection_shards:
-          protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
+        http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
@@ -561,6 +573,8 @@ export function transformChannelToFormDefaults(
     model_mapping: channel.model_mapping || '',
     priority: channel.priority || 0,
     weight: channel.weight || 0,
+    key_rpm_limit: channel.key_rpm_limit || 0,
+    key_quota_limit: channelKeyQuotaUnitsToUSD(channel.key_quota_limit || 0),
     test_model: channel.test_model || '',
     auto_ban: channel.auto_ban ?? 1,
     status: channel.status,
@@ -787,6 +801,8 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
     model_mapping: formData.model_mapping || null,
     priority: formData.priority || null,
     weight: formData.weight || null,
+    key_rpm_limit: formData.key_rpm_limit ?? 0,
+    key_quota_limit: channelKeyUSDToQuotaUnits(formData.key_quota_limit ?? 0),
     test_model: formData.test_model || null,
     auto_ban: formData.auto_ban ?? 1,
     status: formData.status,
@@ -835,6 +851,8 @@ export function transformFormDataToUpdatePayload(
     model_mapping: formData.model_mapping || null,
     priority: formData.priority ?? 0,
     weight: formData.weight ?? 0,
+    key_rpm_limit: formData.key_rpm_limit ?? 0,
+    key_quota_limit: channelKeyUSDToQuotaUnits(formData.key_quota_limit ?? 0),
     test_model: formData.test_model || null,
     auto_ban: formData.auto_ban ?? 1,
     status_code_mapping: formData.status_code_mapping || null,

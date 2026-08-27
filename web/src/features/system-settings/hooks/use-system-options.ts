@@ -32,19 +32,34 @@ type ParseResult<T> =
   | { success: true; value: T }
   | { success: false; error: string; fallback: T }
 
+function optionValueToString(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value == null) return ''
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+  try {
+    return JSON.stringify(value) ?? ''
+  } catch {
+    return ''
+  }
+}
+
 function parseOptionValueSafe<T>(
-  value: string,
+  value: unknown,
   defaultValue: T
 ): ParseResult<T> {
+  const raw = optionValueToString(value)
+
   if (typeof defaultValue === 'boolean') {
     return {
       success: true,
-      value: (value === 'true' || value === '1') as T,
+      value: (raw === 'true' || raw === '1') as T,
     }
   }
 
   if (typeof defaultValue === 'number') {
-    const trimmed = value.trim()
+    const trimmed = raw.trim()
     if (trimmed === '') {
       return {
         success: false,
@@ -56,7 +71,7 @@ function parseOptionValueSafe<T>(
     if (Number.isNaN(parsed)) {
       return {
         success: false,
-        error: `Invalid number: "${value}"`,
+        error: `Invalid number: "${raw}"`,
         fallback: defaultValue,
       }
     }
@@ -65,7 +80,7 @@ function parseOptionValueSafe<T>(
 
   if (Array.isArray(defaultValue)) {
     try {
-      const parsed = JSON.parse(value)
+      const parsed = JSON.parse(raw)
       if (!Array.isArray(parsed)) {
         return {
           success: false,
@@ -96,18 +111,22 @@ function parseOptionValueSafe<T>(
     }
   }
 
-  return { success: true, value: value as T }
+  return { success: true, value: raw as T }
 }
 
 export function getOptionValue<
   T extends Record<string, string | number | boolean | unknown[]>,
->(options: Array<{ key: string; value: string }> | undefined, defaults: T): T {
-  if (!options) return defaults
+>(
+  options: Array<{ key?: string; value?: unknown }> | undefined,
+  defaults: T
+): T {
+  if (!Array.isArray(options)) return defaults
 
   const result = { ...defaults }
   const errors: Array<{ key: string; error: string }> = []
 
   options.forEach((option) => {
+    if (!option || typeof option.key !== 'string') return
     if (option.key in defaults) {
       const parseResult = parseOptionValueSafe(
         option.value,

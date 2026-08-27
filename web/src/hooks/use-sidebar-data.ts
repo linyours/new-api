@@ -18,7 +18,9 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import {
   Activity,
+  Archive,
   Box,
+  CircleAlert,
   CreditCard,
   FileText,
   FlaskConical,
@@ -36,7 +38,7 @@ import {
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { type SidebarData } from '@/components/layout/types'
+import type { SidebarData } from '@/components/layout/types'
 import { ROLE } from '@/lib/roles'
 
 /**
@@ -91,6 +93,11 @@ export function useSidebarData(): SidebarData {
             icon: FileText,
           },
           {
+            title: t('Error Logs'),
+            url: '/usage-logs/error',
+            icon: CircleAlert,
+          },
+          {
             title: t('Task Logs'),
             url: '/usage-logs/task',
             activeUrls: ['/usage-logs/drawing'],
@@ -123,6 +130,11 @@ export function useSidebarData(): SidebarData {
             title: t('Channels'),
             url: '/channels',
             icon: Radio,
+          },
+          {
+            title: t('Exhausted key archive'),
+            url: '/channel-key-archives',
+            icon: Archive,
           },
           {
             title: t('Models'),

@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relay/channel"
@@ -22,6 +21,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
@@ -41,10 +41,7 @@ func getAwsErrorStatusCode(err error) int {
 }
 
 func newAwsInvokeContext(parent context.Context) (context.Context, context.CancelFunc) {
-	if common.RelayTimeout <= 0 {
-		return context.WithCancel(parent)
-	}
-	return context.WithTimeout(parent, time.Duration(common.RelayTimeout)*time.Second)
+	return operation_setting.WithRelayTimeout(parent)
 }
 
 func newAwsInvokeError(requestContext context.Context, err error, operation string) *types.NewAPIError {

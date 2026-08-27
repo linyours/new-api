@@ -159,12 +159,14 @@ export const MULTI_KEY_STATUS = {
   ENABLED: 1,
   MANUAL_DISABLED: 2,
   AUTO_DISABLED: 3,
+  QUOTA_EXHAUSTED: 4,
 } as const
 
 export const MULTI_KEY_STATUS_LABELS = {
   [MULTI_KEY_STATUS.ENABLED]: 'Enabled',
   [MULTI_KEY_STATUS.MANUAL_DISABLED]: 'Manual Disabled',
   [MULTI_KEY_STATUS.AUTO_DISABLED]: 'Auto Disabled',
+  [MULTI_KEY_STATUS.QUOTA_EXHAUSTED]: 'Quota exhausted',
 } as const
 
 export const MULTI_KEY_STATUS_CONFIG = {
@@ -179,6 +181,10 @@ export const MULTI_KEY_STATUS_CONFIG = {
   [MULTI_KEY_STATUS.AUTO_DISABLED]: {
     variant: 'danger' as const,
     label: 'Auto Disabled',
+  },
+  [MULTI_KEY_STATUS.QUOTA_EXHAUSTED]: {
+    variant: 'danger' as const,
+    label: 'Quota exhausted',
   },
 }
 
@@ -209,6 +215,7 @@ export const MULTI_KEY_FILTER_OPTIONS = [
   { value: '1', label: 'Enabled' },
   { value: '2', label: 'Manual Disabled' },
   { value: '3', label: 'Auto Disabled' },
+  { value: '4', label: 'Quota exhausted' },
 ] as const
 
 export const MULTI_KEY_CONFIRM_MESSAGES = {
@@ -220,6 +227,8 @@ export const MULTI_KEY_CONFIRM_MESSAGES = {
   DISABLE_ALL: 'Are you sure you want to disable all enabled keys?',
   DELETE_DISABLED:
     'Are you sure you want to delete all auto-disabled keys? This action cannot be undone.',
+  RESET_QUOTA:
+    'Reset this key quota and make the key available for scheduling again?',
 } as const
 
 // ============================================================================

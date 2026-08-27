@@ -115,7 +115,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		pingTicker = time.NewTicker(pingInterval)
 	}
 
-	logger.LogDebug(c, "relay timeout seconds: %d", common.RelayTimeout)
+	logger.LogDebug(c, "relay timeout seconds: %d", generalSettings.RelayTimeoutSeconds)
 	logger.LogDebug(c, "relay max idle conns: %d", common.RelayMaxIdleConns)
 	logger.LogDebug(c, "relay max idle conns per host: %d", common.RelayMaxIdleConnsPerHost)
 	logger.LogDebug(c, "streaming timeout seconds: %d", int64(streamingTimeout.Seconds()))

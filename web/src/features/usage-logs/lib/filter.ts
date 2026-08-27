@@ -46,7 +46,8 @@ export function buildSearchParams(
   }
 
   switch (logCategory) {
-    case 'common': {
+    case 'common':
+    case 'error': {
       const commonFilters = filters as CommonLogFilters
       return {
         ...baseParams,

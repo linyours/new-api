@@ -162,7 +162,10 @@ func Distribute() func(c *gin.Context) {
 			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
-		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		if setupErr := SetupContextForSelectedChannel(c, channel, modelRequest.Model); setupErr != nil {
+			abortWithOpenAiMessage(c, http.StatusServiceUnavailable, setupErr.Error())
+			return
+		}
 		c.Next()
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)
@@ -470,6 +473,26 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	if newAPIError != nil {
 		return newAPIError
 	}
+	var channelKeyId int64
+	for _, stableKey := range model.CacheGetChannelKeys(channel.Id) {
+		if stableKey.Position == index && stableKey.Key == key {
+			channelKeyId = stableKey.Id
+			break
+		}
+	}
+	if channelKeyId == 0 {
+		if stableKey, err := model.GetChannelKeyByPosition(channel.Id, index); err == nil && stableKey.Key == key {
+			channelKeyId = stableKey.Id
+		}
+	}
+	if channelKeyId == 0 {
+		return types.NewError(
+			fmt.Errorf("channel %d key metadata is not synchronized", channel.Id),
+			types.ErrorCodeGetChannelFailed,
+			types.ErrOptionWithSkipRetry(),
+		)
+	}
+	common.SetContextKey(c, constant.ContextKeyChannelKeyId, channelKeyId)
 	if channel.ChannelInfo.IsMultiKey {
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
 		common.SetContextKey(c, constant.ContextKeyChannelMultiKeyIndex, index)

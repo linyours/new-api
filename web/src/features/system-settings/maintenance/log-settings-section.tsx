@@ -42,6 +42,7 @@ import {
   FormControl,
   FormDescription,
   FormField,
+  FormItem,
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
@@ -63,8 +64,12 @@ import dayjs from '@/lib/dayjs'
 import { formatTimestampToDate } from '@/lib/format'
 
 import {
+  getCurrentErrorLogRetainTask,
+  getCurrentErrorLogTruncateTask,
   getCurrentLogCleanupTask,
   getSystemTask,
+  startErrorLogRetainTask,
+  startErrorLogTruncateTask,
   startLogCleanupTask,
 } from '../api'
 import {
@@ -80,12 +85,16 @@ import type { LogCleanupTask } from '../types'
 
 const logSettingsSchema = z.object({
   LogConsumeEnabled: z.boolean(),
+  autoCleanupEnabled: z.boolean(),
+  retainDays: z.number().int().min(1).max(365),
 })
 
 type LogSettingsFormValues = z.infer<typeof logSettingsSchema>
 
 type LogSettingsSectionProps = {
   defaultEnabled: boolean
+  defaultAutoCleanupEnabled: boolean
+  defaultRetainDays: number
 }
 
 type ServerLogInfo = {
@@ -141,6 +150,8 @@ function isActiveLogCleanupTask(task: LogCleanupTask | null) {
 
 export function LogSettingsSection({
   defaultEnabled,
+  defaultAutoCleanupEnabled,
+  defaultRetainDays,
 }: LogSettingsSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
@@ -148,6 +159,8 @@ export function LogSettingsSection({
     resolver: zodResolver(logSettingsSchema),
     defaultValues: {
       LogConsumeEnabled: defaultEnabled,
+      autoCleanupEnabled: defaultAutoCleanupEnabled,
+      retainDays: defaultRetainDays,
     },
   })
 
@@ -159,6 +172,10 @@ export function LogSettingsSection({
     null
   )
   const [showConfirmDialog, setShowConfirmDialog] = useState(false)
+  const [showTruncateConfirm, setShowTruncateConfirm] = useState(false)
+  const [showRetainConfirm, setShowRetainConfirm] = useState(false)
+  const [isStartingErrorLogTask, setIsStartingErrorLogTask] = useState(false)
+  const [errorLogTask, setErrorLogTask] = useState<LogCleanupTask | null>(null)
   const [serverLogInfo, setServerLogInfo] = useState<ServerLogInfo | null>(null)
   const [serverLogCleanupMode, setServerLogCleanupMode] = useState('by_count')
   const [serverLogCleanupValue, setServerLogCleanupValue] = useState(10)
@@ -174,8 +191,12 @@ export function LogSettingsSection({
   }, [])
 
   useEffect(() => {
-    form.reset({ LogConsumeEnabled: defaultEnabled })
-  }, [defaultEnabled, form])
+    form.reset({
+      LogConsumeEnabled: defaultEnabled,
+      autoCleanupEnabled: defaultAutoCleanupEnabled,
+      retainDays: defaultRetainDays,
+    })
+  }, [defaultAutoCleanupEnabled, defaultEnabled, defaultRetainDays, form])
 
   useEffect(() => {
     fetchServerLogInfo()
@@ -202,6 +223,35 @@ export function LogSettingsSection({
     }
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+
+    async function fetchCurrentErrorLogTask() {
+      try {
+        const [truncateRes, retainRes] = await Promise.all([
+          getCurrentErrorLogTruncateTask(),
+          getCurrentErrorLogRetainTask(),
+        ])
+        if (cancelled) return
+        if (truncateRes.success && truncateRes.data) {
+          setErrorLogTask(truncateRes.data)
+          return
+        }
+        if (retainRes.success && retainRes.data) {
+          setErrorLogTask(retainRes.data)
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    fetchCurrentErrorLogTask()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const purgeTimestamp = useMemo(() => {
     if (!purgeDate) return null
     return Math.floor(purgeDate.getTime() / 1000)
@@ -221,6 +271,16 @@ export function LogSettingsSection({
   const logCleanupProcessed = logCleanupState?.processed ?? 0
   const logCleanupTotal = logCleanupState?.total ?? 0
   const logCleanupTaskId = logCleanupTask?.task_id
+  const errorLogTaskActive = isActiveLogCleanupTask(errorLogTask)
+  const errorLogTaskState = errorLogTask?.state
+  const errorLogTaskProgress = Math.min(
+    100,
+    Math.max(0, errorLogTaskState?.progress ?? 0)
+  )
+  const errorLogTaskProcessed = errorLogTaskState?.processed ?? 0
+  const errorLogTaskTotal = errorLogTaskState?.total ?? 0
+  const errorLogTaskId = errorLogTask?.task_id
+  const retainDaysValue = form.watch('retainDays')
 
   useEffect(() => {
     if (!logCleanupTaskId || !logCleanupActive) return
@@ -256,12 +316,109 @@ export function LogSettingsSection({
     }
   }, [logCleanupActive, logCleanupTaskId, t])
 
+  useEffect(() => {
+    if (!errorLogTaskId || !errorLogTaskActive) return
+
+    let cancelled = false
+    const interval = window.setInterval(async () => {
+      try {
+        const res = await getSystemTask(errorLogTaskId)
+        if (cancelled || !res.success || !res.data) return
+
+        setErrorLogTask(res.data)
+        if (!isActiveLogCleanupTask(res.data)) {
+          if (res.data.status === 'succeeded') {
+            const count =
+              res.data.result?.deleted_count ?? res.data.state?.processed ?? 0
+            toast.success(
+              count > 0
+                ? t('{{count}} error log entries removed.', { count })
+                : t('No error log entries needed cleanup.')
+            )
+          } else if (res.data.status === 'failed') {
+            toast.error(res.data.error || t('Failed to clear error logs'))
+          }
+        }
+      } catch {
+        /* keep polling */
+      }
+    }, 1000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [errorLogTaskActive, errorLogTaskId, t])
+
   const onSubmit = async (values: LogSettingsFormValues) => {
-    if (values.LogConsumeEnabled === defaultEnabled) return
-    await updateOption.mutateAsync({
-      key: 'LogConsumeEnabled',
-      value: values.LogConsumeEnabled,
-    })
+    const updates: Array<{ key: string; value: string | boolean | number }> = []
+    if (values.LogConsumeEnabled !== defaultEnabled) {
+      updates.push({
+        key: 'LogConsumeEnabled',
+        value: values.LogConsumeEnabled,
+      })
+    }
+    if (values.autoCleanupEnabled !== defaultAutoCleanupEnabled) {
+      updates.push({
+        key: 'error_log_setting.auto_cleanup_enabled',
+        value: values.autoCleanupEnabled,
+      })
+    }
+    if (values.retainDays !== defaultRetainDays) {
+      updates.push({
+        key: 'error_log_setting.retain_days',
+        value: values.retainDays,
+      })
+    }
+    if (updates.length === 0) return
+    for (const update of updates) {
+      await updateOption.mutateAsync(update)
+    }
+  }
+
+  const handleTruncateErrorLogs = async () => {
+    setIsStartingErrorLogTask(true)
+    try {
+      const res = await startErrorLogTruncateTask()
+      if (!res.success || res.data == null) {
+        throw new Error(res.message || t('Failed to clear error logs'))
+      }
+      const task = res.data
+      setErrorLogTask(task)
+      setShowTruncateConfirm(false)
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : t('Failed to clear error logs')
+      )
+    } finally {
+      setIsStartingErrorLogTask(false)
+    }
+  }
+
+  const handleRetainErrorLogs = async () => {
+    const retainDays = form.getValues('retainDays')
+    if (!Number.isInteger(retainDays) || retainDays < 1 || retainDays > 365) {
+      toast.error(t('Keep error logs from the last 1 to 365 days.'))
+      return
+    }
+    setIsStartingErrorLogTask(true)
+    try {
+      const res = await startErrorLogRetainTask(retainDays)
+      if (!res.success || res.data == null) {
+        throw new Error(res.message || t('Failed to retain error logs'))
+      }
+      const task = res.data
+      setErrorLogTask(task)
+      setShowRetainConfirm(false)
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t('Failed to retain error logs')
+      )
+    } finally {
+      setIsStartingErrorLogTask(false)
+    }
   }
 
   const handleRequestCleanLogs = () => {
@@ -419,6 +576,115 @@ export function LogSettingsSection({
                 {logCleanupTask.status === 'failed' && logCleanupTask.error && (
                   <div className='text-destructive mt-2 text-xs'>
                     {logCleanupTask.error}
+                  </div>
+                )}
+              </div>
+            )}
+          </SettingsControlGroup>
+
+          <SettingsControlGroup className='space-y-3'>
+            <div>
+              <h4 className='text-sm font-medium'>
+                {t('Error log maintenance')}
+              </h4>
+              <p className='text-muted-foreground text-sm'>
+                {t(
+                  'Error logs are stored separately from usage logs. Clearing them reclaims table space without touching usage history.'
+                )}
+              </p>
+            </div>
+            <FormField
+              control={form.control}
+              name='autoCleanupEnabled'
+              render={({ field }) => (
+                <SettingsSwitchItem>
+                  <SettingsSwitchContent>
+                    <FormLabel>
+                      {t('Automatically remove old error logs')}
+                    </FormLabel>
+                    <FormDescription>
+                      {t(
+                        'Delete error logs older than the retention period once a day.'
+                      )}
+                    </FormDescription>
+                  </SettingsSwitchContent>
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </SettingsSwitchItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='retainDays'
+              render={({ field }) => (
+                <FormItem className='max-w-xs'>
+                  <FormLabel>{t('Days to keep')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={1}
+                      max={365}
+                      value={field.value}
+                      onChange={(event) =>
+                        field.onChange(Number(event.target.value))
+                      }
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t('Keep error logs from the last 1 to 365 days.')}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <div className='flex flex-wrap gap-3'>
+              <Button
+                type='button'
+                variant='destructive'
+                onClick={() => setShowTruncateConfirm(true)}
+                disabled={isStartingErrorLogTask || errorLogTaskActive}
+              >
+                {isStartingErrorLogTask || errorLogTaskActive
+                  ? t('Cleaning...')
+                  : t('Clear error logs')}
+              </Button>
+              <Button
+                type='button'
+                variant='outline'
+                onClick={() => setShowRetainConfirm(true)}
+                disabled={isStartingErrorLogTask || errorLogTaskActive}
+              >
+                {t('Delete older error logs')}
+              </Button>
+            </div>
+            {errorLogTask && (
+              <div className='rounded-md border p-3'>
+                <div className='mb-2 flex items-center justify-between gap-3 text-sm'>
+                  <span className='font-medium'>
+                    {t('Error log cleanup progress')}
+                  </span>
+                  <span className='text-muted-foreground tabular-nums'>
+                    {errorLogTaskProgress}%
+                  </span>
+                </div>
+                <Progress value={errorLogTaskProgress} />
+                <div className='text-muted-foreground mt-2 text-xs'>
+                  {t(
+                    '{{processed}} of {{total}} error log entries processed.',
+                    {
+                      processed: errorLogTaskProcessed,
+                      total: errorLogTaskTotal,
+                    }
+                  )}
+                </div>
+                {errorLogTask.status === 'failed' && errorLogTask.error && (
+                  <div className='text-destructive mt-2 text-xs'>
+                    {errorLogTask.error}
                   </div>
                 )}
               </div>
@@ -607,6 +873,64 @@ export function LogSettingsSection({
               disabled={isStartingLogCleanup}
             >
               {isStartingLogCleanup ? t('Cleaning...') : t('Delete logs')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={showTruncateConfirm}
+        onOpenChange={setShowTruncateConfirm}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('Confirm error log cleanup')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(
+                'This will permanently delete every error log. This action cannot be undone.'
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isStartingErrorLogTask}>
+              {t('Cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              variant='destructive'
+              onClick={handleTruncateErrorLogs}
+              disabled={isStartingErrorLogTask}
+            >
+              {isStartingErrorLogTask ? t('Cleaning...') : t('Delete all')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={showRetainConfirm} onOpenChange={setShowRetainConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t('Confirm error log retention')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(
+                'Error logs older than {{days}} days will be deleted. This action cannot be undone.',
+                { days: retainDaysValue }
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isStartingErrorLogTask}>
+              {t('Cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              variant='destructive'
+              onClick={handleRetainErrorLogs}
+              disabled={isStartingErrorLogTask}
+            >
+              {isStartingErrorLogTask
+                ? t('Cleaning...')
+                : t('Delete older error logs')}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -27,6 +27,13 @@ func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 		middleware.SecureVerificationRequired(),
 		controller.GetChannelKey,
 	)
+	channelRoute.POST("/key_archives/:id/key",
+		middleware.RequirePermission(authz.ChannelSecretView),
+		middleware.CriticalRateLimit(),
+		middleware.DisableCache(),
+		middleware.SecureVerificationRequired(),
+		controller.GetGlobalChannelKeyArchiveSecret,
+	)
 
 	for _, route := range channelPermissionRoutes {
 		channelRoute.Handle(route.method, route.path,
@@ -42,6 +49,9 @@ var channelPermissionRoutes = []permissionRoute{
 	{method: http.MethodGet, path: "/models", permission: authz.ChannelRead, handler: controller.ChannelListModels},
 	{method: http.MethodGet, path: "/models_enabled", permission: authz.ChannelRead, handler: controller.EnabledListModels},
 	{method: http.MethodGet, path: "/ops", permission: authz.ChannelRead, handler: controller.GetChannelOps},
+	{method: http.MethodGet, path: "/key_archives", permission: authz.ChannelRead, handler: controller.GetGlobalChannelKeyArchives},
+	{method: http.MethodPost, path: "/key_archives/:id/restore", permission: authz.ChannelWrite, handler: controller.RestoreGlobalChannelKeyArchive},
+	{method: http.MethodDelete, path: "/key_archives/:id", permission: authz.ChannelSensitiveWrite, handler: controller.DeleteGlobalChannelKeyArchive},
 	{method: http.MethodGet, path: "/:id", permission: authz.ChannelRead, handler: controller.GetChannel},
 	{method: http.MethodGet, path: "/test", permission: authz.ChannelOperate, handler: controller.TestAllChannels},
 	{method: http.MethodGet, path: "/test/:id", permission: authz.ChannelOperate, handler: controller.TestChannel},

@@ -202,7 +202,21 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		noteTaskQuotaClamp(info, clamp)
 	}
 
-	// 7. 预扣费（仅首次 — 重试时 info.Billing 已存在，跳过）
+	// 7. 在发送异步任务前锁定具体 Key 的 RPM 和额度。任务提交成功后
+	// SettleBilling 会提交额度，后续轮询退款/差额则通过 TaskPrivateData
+	// 中的稳定 ChannelKeyId 调整。
+	selectedChannel, err := model.CacheGetChannel(info.ChannelId)
+	if err != nil {
+		return nil, service.TaskErrorWrapperLocal(err, "get_channel_failed", http.StatusInternalServerError)
+	}
+	if apiErr := service.AdmitChannelKey(c, info, selectedChannel, info.PriceData.Quota); apiErr != nil {
+		return nil, service.TaskErrorFromAPIError(apiErr)
+	}
+	// AdmitChannelKey may replace the legacy index-selected credential with a
+	// sibling that has capacity, so refresh adaptor metadata before request build.
+	info.InitChannelMeta(c)
+
+	// 8. 预扣费（仅首次 — 重试时 info.Billing 已存在，跳过）
 	if info.Billing == nil && !info.PriceData.FreeModel {
 		info.ForcePreConsume = true
 		if apiErr := service.PreConsumeBilling(c, info.PriceData.Quota, info); apiErr != nil {
@@ -210,7 +224,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		}
 	}
 
-	// 8. 构建请求体
+	// 9. 构建请求体
 	requestBody, err := adaptor.BuildRequestBody(c, info)
 	if err != nil {
 		return nil, service.TaskErrorWrapper(err, "build_request_failed", http.StatusInternalServerError)

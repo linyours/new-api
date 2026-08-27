@@ -39,7 +39,14 @@ type Channel struct {
 	Models             string  `json:"models"`
 	Group              string  `json:"group" gorm:"type:varchar(64);default:'default'"`
 	UsedQuota          int64   `json:"used_quota" gorm:"bigint;default:0"`
-	ModelMapping       *string `json:"model_mapping" gorm:"type:text"`
+	// KeyRpmLimit and KeyQuotaLimit are defaults applied independently to every
+	// credential belonging to this channel. A zero value means unlimited. Key
+	// rows may override either value without changing sibling credentials.
+	// Per-model RPM caps are additional: a request consumes both the default
+	// per-key RPM window and the model-specific window when both are set.
+	KeyRpmLimit   int     `json:"key_rpm_limit"`
+	KeyQuotaLimit int64   `json:"key_quota_limit" gorm:"bigint"`
+	ModelMapping  *string `json:"model_mapping" gorm:"type:text"`
 	//MaxInputTokens     *int    `json:"max_input_tokens" gorm:"default:0"`
 	StatusCodeMapping *string `json:"status_code_mapping" gorm:"type:varchar(1024);default:''"`
 	Priority          *int64  `json:"priority" gorm:"bigint;default:0"`
@@ -447,6 +454,10 @@ func BatchInsertChannels(channels []Channel) error {
 				tx.Rollback()
 				return err
 			}
+			if err := syncChannelKeysWithDB(tx, &channel_); err != nil {
+				tx.Rollback()
+				return err
+			}
 		}
 	}
 	return tx.Commit().Error
@@ -463,6 +474,10 @@ func BatchDeleteChannels(ids []int) (int64, error) {
 	}
 	var deletedCount int64
 	for _, chunk := range lo.Chunk(ids, 200) {
+		if err := deleteChannelKeyData(tx, chunk); err != nil {
+			tx.Rollback()
+			return 0, err
+		}
 		result := tx.Where("id in (?)", chunk).Delete(&Channel{})
 		if result.Error != nil {
 			tx.Rollback()
@@ -478,6 +493,30 @@ func BatchDeleteChannels(ids []int) (int64, error) {
 		return 0, err
 	}
 	return deletedCount, nil
+}
+
+// deleteChannelKeyData removes every credential-bearing or accounting row for
+// channels that are being permanently deleted. Explicit cleanup is required
+// because the project supports databases without relying on foreign-key
+// cascades, and leaving archive snapshots behind would retain API secrets.
+func deleteChannelKeyData(tx *gorm.DB, channelIds []int) error {
+	for _, value := range []any{
+		&ChannelKeyQuotaReservation{},
+		&ChannelKeyEvent{},
+		&ChannelKeyArchive{},
+		&ChannelKey{},
+	} {
+		// Some migration and isolated-test databases can legitimately contain
+		// channels before the new key tables have been created. Skipping a
+		// missing table preserves channel deletion during that transition.
+		if !tx.Migrator().HasTable(value) {
+			continue
+		}
+		if err := tx.Where("channel_id IN ?", channelIds).Delete(value).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (channel *Channel) GetPriority() int64 {
@@ -526,7 +565,10 @@ func (channel *Channel) Insert() error {
 		return err
 	}
 	err = channel.AddAbilities(nil)
-	return err
+	if err != nil {
+		return err
+	}
+	return SyncChannelKeys(channel)
 }
 
 func (channel *Channel) Update() error {
@@ -573,9 +615,20 @@ func (channel *Channel) Update() error {
 	if err != nil {
 		return err
 	}
+	// GORM struct updates omit zero values. Zero is meaningful for both fields
+	// ("unlimited"), so persist them explicitly to allow removing a limit.
+	if err = DB.Model(&Channel{}).Where("id = ?", channel.Id).Updates(map[string]any{
+		"key_rpm_limit":   channel.KeyRpmLimit,
+		"key_quota_limit": channel.KeyQuotaLimit,
+	}).Error; err != nil {
+		return err
+	}
 	DB.Model(channel).First(channel, "id = ?", channel.Id)
 	err = channel.UpdateAbilities(nil)
-	return err
+	if err != nil {
+		return err
+	}
+	return SyncChannelKeys(channel)
 }
 
 func (channel *Channel) UpdateResponseTime(responseTime int64) {
@@ -599,13 +652,15 @@ func (channel *Channel) UpdateBalance(balance float64) {
 }
 
 func (channel *Channel) Delete() error {
-	var err error
-	err = DB.Delete(channel).Error
-	if err != nil {
-		return err
-	}
-	err = channel.DeleteAbilities()
-	return err
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := deleteChannelKeyData(tx, []int{channel.Id}); err != nil {
+			return err
+		}
+		if err := tx.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(channel).Error
+	})
 }
 
 var channelStatusLock sync.Mutex
@@ -780,6 +835,12 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 			common.SysLog(fmt.Sprintf("failed to update channel status: channel_id=%d, status=%d, error=%v", channel.Id, status, err))
 			return false
 		}
+		if channel.ChannelInfo.IsMultiKey && usingKey != "" {
+			if err := SetChannelKeyStatusByCredential(channel, usingKey, status, reason); err != nil {
+				common.SysLog(fmt.Sprintf("failed to update stable channel key status: channel_id=%d, error=%v", channel.Id, err))
+				return false
+			}
+		}
 	}
 	return true
 }
@@ -874,13 +935,21 @@ func updateChannelUsedQuota(id int, quota int) {
 }
 
 func DeleteChannelByStatus(status int64) (int64, error) {
-	result := DB.Where("status = ?", status).Delete(&Channel{})
-	return result.RowsAffected, result.Error
+	var ids []int
+	if err := DB.Model(&Channel{}).Where("status = ?", status).Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
+	return BatchDeleteChannels(ids)
 }
 
 func DeleteDisabledChannel() (int64, error) {
-	result := DB.Where("status = ? or status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).Delete(&Channel{})
-	return result.RowsAffected, result.Error
+	var ids []int
+	if err := DB.Model(&Channel{}).
+		Where("status = ? OR status = ?", common.ChannelStatusAutoDisabled, common.ChannelStatusManuallyDisabled).
+		Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
+	return BatchDeleteChannels(ids)
 }
 
 func GetPaginatedTags(offset int, limit int) ([]*string, error) {

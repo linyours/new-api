@@ -53,6 +53,8 @@ export const channelSchema = z.object({
   models: z.string().default(''),
   group: z.string().default('default'),
   used_quota: z.number().default(0),
+  key_rpm_limit: z.number().default(0),
+  key_quota_limit: z.number().default(0),
   model_mapping: z.string().nullish(),
   status_code_mapping: z.string().nullish(),
   priority: z.number().nullish(),
@@ -218,11 +220,21 @@ export interface CopyChannelResponse {
 // ============================================================================
 
 export interface KeyStatus {
+  id: number
   index: number
-  status: number // 1: enabled, 2: manual disabled, 3: auto disabled
+  status: number // 1: enabled, 2: manual disabled, 3: error disabled, 4: quota exhausted
   disabled_time?: number
   reason?: string
   key_preview?: string
+  rpm_limit?: number | null
+  effective_rpm: number
+  model_rpm_limits: Record<string, number>
+  quota_limit?: number | null
+  effective_quota: number
+  quota_used: number
+  quota_reserved: number
+  lifetime_quota: number
+  exhausted_time?: number
 }
 
 export type MultiKeyConfirmAction = {
@@ -233,7 +245,11 @@ export type MultiKeyConfirmAction = {
     | 'enable-all'
     | 'disable-all'
     | 'delete-disabled'
+    | 'reset-quota'
+    | 'restore-archived'
   keyIndex?: number
+  keyId?: number
+  archiveId?: number
 }
 
 export interface MultiKeyStatusResponse {
@@ -310,10 +326,19 @@ export interface MultiKeyManageParams {
     | 'disable_all_keys'
     | 'delete_key'
     | 'delete_disabled_keys'
+    | 'update_key_limits'
+    | 'reset_key_quota'
+    | 'get_key_archives'
+    | 'restore_archived_key'
   key_index?: number
+  key_id?: number
+  archive_id?: number
+  rpm_limit?: number | null
+  quota_limit?: number | null
+  model_rpm_limits?: Record<string, number>
   page?: number
   page_size?: number
-  status?: number // 1=enabled, 2=manual_disabled, 3=auto_disabled
+  status?: number // 1=enabled, 2=manual_disabled, 3=auto_disabled, 4=quota_exhausted
 }
 
 export interface BatchDeleteParams {
@@ -330,6 +355,8 @@ export interface TagOperationParams {
   new_tag?: string
   priority?: number
   weight?: number
+  key_rpm_limit?: number
+  key_quota_limit?: number
   model_mapping?: string
   models?: string
   groups?: string
@@ -352,6 +379,8 @@ export interface ChannelFormData {
   weight?: number
   test_model?: string
   auto_ban?: number
+  key_rpm_limit?: number
+  key_quota_limit?: number
   status: number
   status_code_mapping?: string
   tag?: string

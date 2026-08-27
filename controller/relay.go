@@ -179,43 +179,89 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			}
 			service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
 		}
+		// Successful billing paths mark the key reservation settled. Any local
+		// failure or relay path that returned before settlement releases the
+		// remaining reservation here, preventing quota from being stranded.
+		service.ReleaseChannelKeyQuotaReservation(relayInfo)
 	}()
 
 	retryParam := &service.RetryParam{
-		Ctx:         c,
-		TokenGroup:  relayInfo.TokenGroup,
-		ModelName:   relayInfo.OriginModelName,
-		RequestPath: c.Request.URL.Path,
-		Retry:       common.GetPointer(0),
+		Ctx:                c,
+		TokenGroup:         relayInfo.TokenGroup,
+		ModelName:          relayInfo.OriginModelName,
+		RequestPath:        c.Request.URL.Path,
+		Retry:              common.GetPointer(0),
+		ExcludedChannelIds: make(map[int]struct{}),
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
-		channel, channelErr := getChannel(c, relayInfo, retryParam)
-		if channelErr != nil {
-			logger.LogError(c, channelErr.Error())
-			newAPIError = channelErr
+		var channel *model.Channel
+
+		// Capacity fallback is separate from upstream-error retries. If every Key
+		// on a selected channel is temporarily full or permanently exhausted, try
+		// another weighted channel at the same priority without consuming
+		// common.RetryTimes.
+		for {
+			var channelErr *types.NewAPIError
+			channel, channelErr = getChannel(c, relayInfo, retryParam)
+			if channelErr != nil {
+				if retryParam.AllCapacityFailuresAreRPM() {
+					channelErr = service.NewChannelKeyRPMExhaustedError()
+				}
+				logger.LogError(c, channelErr.Error())
+				newAPIError = channelErr
+				break
+			}
+			if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
+				newAPIError = billingErr
+				break
+			}
+
+			bodyStorage, bodyErr := common.GetBodyStorage(c)
+			if bodyErr != nil {
+				// Ensure consistent 413 for oversized bodies even when error occurs later (e.g., retry path).
+				if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
+					newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
+				} else {
+					newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+				}
+				break
+			}
+			c.Request.Body = io.NopCloser(bodyStorage)
+
+			admissionErr := service.AdmitChannelKey(c, relayInfo, channel, priceData.QuotaToPreConsume)
+			if admissionErr == nil {
+				// Admission may choose a sibling credential after the provisional
+				// middleware selection. Refresh the stable key ID and API key
+				// before any adaptor builds or sends the upstream request.
+				relayInfo.InitChannelMeta(c)
+				newAPIError = nil
+				break
+			}
+			if admissionErr.GetErrorCode() != types.ErrorCodeChannelKeyRateLimited &&
+				admissionErr.GetErrorCode() != types.ErrorCodeChannelKeyQuotaInsufficient &&
+				admissionErr.GetErrorCode() != types.ErrorCodeChannelNoAvailableKey {
+				newAPIError = admissionErr
+				break
+			}
+			if _, specificChannel := c.Get(string(constant.ContextKeyTokenSpecificChannelId)); specificChannel {
+				newAPIError = admissionErr
+				break
+			}
+
+			if _, excluded := retryParam.ExcludedChannelIds[channel.Id]; !excluded {
+				retryParam.RecordCapacityFailure(admissionErr.GetErrorCode())
+			}
+			retryParam.ExcludedChannelIds[channel.Id] = struct{}{}
+			logger.LogDebug(c, "channel %d has no key capacity, trying another channel at the same priority", channel.Id)
+		}
+		if newAPIError != nil {
 			break
 		}
 		addUsedChannel(c, channel.Id)
-		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
-			newAPIError = billingErr
-			break
-		}
-
-		bodyStorage, bodyErr := common.GetBodyStorage(c)
-		if bodyErr != nil {
-			// Ensure consistent 413 for oversized bodies even when error occurs later (e.g., retry path)
-			if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
-				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
-			} else {
-				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
-			}
-			break
-		}
-		c.Request.Body = io.NopCloser(bodyStorage)
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -232,6 +278,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			relayInfo.LastError = nil
 			return
 		}
+		service.ReleaseChannelKeyQuotaReservation(relayInfo)
 
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
@@ -299,17 +346,14 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
 	if info.ChannelMeta == nil {
-		autoBan := c.GetBool("auto_ban")
-		autoBanInt := 1
-		if !autoBan {
-			autoBanInt = 0
+		currentId := c.GetInt("channel_id")
+		current, cacheErr := model.CacheGetChannel(currentId)
+		if cacheErr != nil {
+			return nil, types.NewError(cacheErr, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 		}
-		return &model.Channel{
-			Id:      c.GetInt("channel_id"),
-			Type:    c.GetInt("channel_type"),
-			Name:    c.GetString("channel_name"),
-			AutoBan: &autoBanInt,
-		}, nil
+		if _, excluded := retryParam.ExcludedChannelIds[current.Id]; !excluded {
+			return current, nil
+		}
 	}
 	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
 	if err != nil {
@@ -511,14 +555,16 @@ func RelayTask(c *gin.Context) {
 		if taskErr != nil && relayInfo.Billing != nil {
 			relayInfo.Billing.Refund(c)
 		}
+		service.ReleaseChannelKeyQuotaReservation(relayInfo)
 	}()
 
 	retryParam := &service.RetryParam{
-		Ctx:         c,
-		TokenGroup:  relayInfo.TokenGroup,
-		ModelName:   relayInfo.OriginModelName,
-		RequestPath: c.Request.URL.Path,
-		Retry:       common.GetPointer(0),
+		Ctx:                c,
+		TokenGroup:         relayInfo.TokenGroup,
+		ModelName:          relayInfo.OriginModelName,
+		RequestPath:        c.Request.URL.Path,
+		Retry:              common.GetPointer(0),
+		ExcludedChannelIds: make(map[int]struct{}),
 	}
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
@@ -536,8 +582,11 @@ func RelayTask(c *gin.Context) {
 			var channelErr *types.NewAPIError
 			channel, channelErr = getChannel(c, relayInfo, retryParam)
 			if channelErr != nil {
+				if retryParam.AllCapacityFailuresAreRPM() {
+					channelErr = service.NewChannelKeyRPMExhaustedError()
+				}
 				logger.LogError(c, channelErr.Error())
-				taskErr = service.TaskErrorWrapperLocal(channelErr.Err, "get_channel_failed", http.StatusInternalServerError)
+				taskErr = service.TaskErrorWrapperLocal(channelErr.Err, string(channelErr.GetErrorCode()), channelErr.StatusCode)
 				break
 			}
 		}
@@ -557,6 +606,23 @@ func RelayTask(c *gin.Context) {
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
 		if taskErr == nil {
 			break
+		}
+		service.ReleaseChannelKeyQuotaReservation(relayInfo)
+		if taskErr.Code == string(types.ErrorCodeChannelKeyRateLimited) ||
+			taskErr.Code == string(types.ErrorCodeChannelKeyQuotaInsufficient) ||
+			taskErr.Code == string(types.ErrorCodeChannelNoAvailableKey) {
+			if _, locked := relayInfo.LockedChannel.(*model.Channel); locked {
+				break
+			}
+			if _, specificChannel := c.Get(string(constant.ContextKeyTokenSpecificChannelId)); specificChannel {
+				break
+			}
+			if _, excluded := retryParam.ExcludedChannelIds[channel.Id]; !excluded {
+				retryParam.RecordCapacityFailure(types.ErrorCode(taskErr.Code))
+			}
+			retryParam.ExcludedChannelIds[channel.Id] = struct{}{}
+			retryParam.ResetRetryNextTry()
+			continue
 		}
 
 		if !taskErr.LocalError {

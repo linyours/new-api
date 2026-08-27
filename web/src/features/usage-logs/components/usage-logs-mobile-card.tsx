@@ -503,7 +503,9 @@ export function UsageLogsMobileList<TData>({
               tintClass
             )}
           >
-            {logCategory === 'common' && <CommonLogsCard cells={cells} />}
+            {(logCategory === 'common' || logCategory === 'error') && (
+              <CommonLogsCard cells={cells} />
+            )}
             {logCategory === 'task' && <TaskLogsCard cells={cells} />}
             {logCategory === 'drawing' && <DrawingLogsCard cells={cells} />}
           </div>

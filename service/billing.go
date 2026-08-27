@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
@@ -49,6 +50,17 @@ func PreConsumeBilling(c *gin.Context, preConsumedQuota int, relayInfo *relaycom
 // SettleBilling 执行计费结算。如果 RelayInfo 上有 BillingSession 则通过 session 结算，
 // 否则回退到旧的 PostConsumeQuota 路径（兼容按次计费等场景）。
 func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuota int) error {
+	if actualQuota < 0 {
+		return fmt.Errorf("actual quota cannot be negative: %d", actualQuota)
+	}
+	// Channel-key consumption represents upstream capacity that has already
+	// been spent. Commit it before user funding settlement so a later wallet or
+	// subscription error cannot release the key reservation and lose upstream
+	// accounting. The commit is idempotent for retry-safe callers.
+	if err := settleChannelKeyQuota(relayInfo, actualQuota); err != nil {
+		return err
+	}
+
 	if relayInfo.Billing != nil {
 		preConsumed := relayInfo.Billing.GetPreConsumedQuota()
 		delta := actualQuota - preConsumed
@@ -89,7 +101,28 @@ func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuo
 	// 回退：无 BillingSession 时使用旧路径
 	quotaDelta := actualQuota - relayInfo.FinalPreConsumedQuota
 	if quotaDelta != 0 {
-		return PostConsumeQuota(relayInfo, quotaDelta, relayInfo.FinalPreConsumedQuota, true)
+		if err := PostConsumeQuota(relayInfo, quotaDelta, relayInfo.FinalPreConsumedQuota, true); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+// settleChannelKeyQuota commits the stable key reservation after the existing
+// user funding settlement succeeds. It is deliberately centralized here so
+// text, image, audio, realtime and task paths that already use SettleBilling do
+// not each reimplement per-key accounting.
+func settleChannelKeyQuota(relayInfo *relaycommon.RelayInfo, actualQuota int) error {
+	if relayInfo == nil || relayInfo.ChannelKeyQuotaReservationId <= 0 || relayInfo.ChannelKeyQuotaSettled {
+		return nil
+	}
+	if actualQuota < 0 {
+		return fmt.Errorf("channel key actual quota cannot be negative: %d", actualQuota)
+	}
+	_, err := model.CommitChannelKeyQuota(relayInfo.ChannelKeyQuotaReservationId, int64(actualQuota))
+	if err != nil {
+		return err
+	}
+	relayInfo.ChannelKeyQuotaSettled = true
 	return nil
 }

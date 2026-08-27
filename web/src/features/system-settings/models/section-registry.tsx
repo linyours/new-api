@@ -56,10 +56,16 @@ const MODELS_SECTIONS = [
             ),
           },
           general_setting: {
-            ping_interval_enabled:
-              settings['general_setting.ping_interval_enabled'],
+            ping_interval_enabled: Boolean(
+              settings['general_setting.ping_interval_enabled']
+            ),
             ping_interval_seconds:
-              settings['general_setting.ping_interval_seconds'],
+              Number(settings['general_setting.ping_interval_seconds']) || 60,
+            relay_timeout_seconds: Number.isFinite(
+              Number(settings['general_setting.relay_timeout_seconds'])
+            )
+              ? Number(settings['general_setting.relay_timeout_seconds'])
+              : 0,
           },
         }}
       />

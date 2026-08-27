@@ -160,6 +160,53 @@ func TestCopyChannelRejectsInvalidLegacyProxySettings(t *testing.T) {
 	assert.Equal(t, int64(1), channelCount)
 }
 
+func TestCopyChannelCopiesPerKeyModelRPMLimits(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&model.ChannelKey{},
+		&model.ChannelKeyQuotaReservation{},
+		&model.ChannelKeyEvent{},
+		&model.ChannelKeyArchive{},
+	))
+	model.InitChannelKeyCache(nil)
+	t.Cleanup(func() { model.InitChannelKeyCache(nil) })
+
+	origin := &model.Channel{
+		Type:   constant.ChannelTypeOpenAI,
+		Name:   "rpm channel",
+		Key:    "sk-test",
+		Models: "gpt-4o,gpt-4o-mini",
+		Group:  "default",
+		Status: common.ChannelStatusEnabled,
+	}
+	require.NoError(t, origin.Insert())
+	keys := model.CacheGetChannelKeys(origin.Id)
+	require.Len(t, keys, 1)
+	limits := model.ChannelKeyModelRpmLimits{"gpt-4o": 12}
+	require.NoError(t, model.UpdateChannelKeyLimits(origin.Id, keys[0].Id, nil, nil, &limits))
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", origin.Id)}}
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/channel/copy", nil)
+
+	CopyChannel(ctx)
+
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Id int `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.True(t, response.Success)
+	require.NotEqual(t, origin.Id, response.Data.Id)
+
+	copied := model.CacheGetChannelKeys(response.Data.Id)
+	require.Len(t, copied, 1)
+	assert.Equal(t, model.ChannelKeyModelRpmLimits{"gpt-4o": 12}, copied[0].ModelRpmLimits)
+}
+
 func TestDeleteChannelResetsProxyCacheWhenPreReadFails(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.AutoMigrate(&model.Log{}))

@@ -7,16 +7,22 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 )
 
 type RetryParam struct {
-	Ctx          *gin.Context
-	TokenGroup   string
-	ModelName    string
-	RequestPath  string
-	Retry        *int
-	resetNextTry bool
+	Ctx         *gin.Context
+	TokenGroup  string
+	ModelName   string
+	RequestPath string
+	Retry       *int
+	// ExcludedChannelIds contains channels that have no usable key capacity for
+	// this request. Capacity fallback must not consume an upstream-error retry.
+	ExcludedChannelIds map[int]struct{}
+	capacityFailures   int
+	onlyRPMFailures    bool
+	resetNextTry       bool
 }
 
 func (p *RetryParam) GetRetry() int {
@@ -43,6 +49,19 @@ func (p *RetryParam) IncreaseRetry() {
 
 func (p *RetryParam) ResetRetryNextTry() {
 	p.resetNextTry = true
+}
+
+func (p *RetryParam) RecordCapacityFailure(errorCode types.ErrorCode) {
+	if p.capacityFailures == 0 {
+		p.onlyRPMFailures = errorCode == types.ErrorCodeChannelKeyRateLimited
+	} else {
+		p.onlyRPMFailures = p.onlyRPMFailures && errorCode == types.ErrorCodeChannelKeyRateLimited
+	}
+	p.capacityFailures++
+}
+
+func (p *RetryParam) AllCapacityFailuresAreRPM() bool {
+	return p.capacityFailures > 0 && p.onlyRPMFailures
 }
 
 // CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.
@@ -115,7 +134,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath)
+			channel, _ = model.GetRandomSatisfiedChannelExcluding(autoGroup, param.ModelName, priorityRetry, param.RequestPath, param.ExcludedChannelIds)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -153,7 +172,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath)
+		channel, err = model.GetRandomSatisfiedChannelExcluding(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath, param.ExcludedChannelIds)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}

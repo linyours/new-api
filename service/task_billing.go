@@ -177,6 +177,19 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 
 	// 2. 退还令牌额度
 	taskAdjustTokenQuota(ctx, task, -quota)
+	if task.PrivateData.ChannelKeyQuotaTracked {
+		if err := model.AdjustChannelKeyQuota(
+			task.PrivateData.ChannelKeyId,
+			-int64(quota),
+			task.TaskID,
+			"task failed: "+reason,
+		); err != nil {
+			// Funding has already been refunded at this point. Do not report the
+			// whole operation as retryable (which could double-refund the user);
+			// retain a high-signal reconciliation warning instead.
+			logger.LogError(ctx, fmt.Sprintf("退还渠道密钥额度失败 task %s: %s", task.TaskID, err.Error()))
+		}
+	}
 
 	// 3. 记录日志
 	other := taskBillingOther(task)
@@ -236,6 +249,16 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 
 	// 调整令牌额度
 	taskAdjustTokenQuota(ctx, task, quotaDelta)
+	if task.PrivateData.ChannelKeyQuotaTracked {
+		if err := model.AdjustChannelKeyQuota(
+			task.PrivateData.ChannelKeyId,
+			int64(quotaDelta),
+			task.TaskID,
+			"task quota recalculated: "+reason,
+		); err != nil {
+			logger.LogError(ctx, fmt.Sprintf("调整渠道密钥额度失败 task %s: %s", task.TaskID, err.Error()))
+		}
+	}
 
 	task.Quota = actualQuota
 	if err := task.UpdateQuota(); err != nil {

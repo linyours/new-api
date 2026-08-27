@@ -944,7 +944,7 @@ export function useChannelsColumns(
                       <div className='space-y-1 text-xs'>
                         {statusReason && (
                           <div>
-                            {t('Reason:')} {statusReason}
+                            {t('Reason:')} {t(statusReason)}
                           </div>
                         )}
                         {statusTime && (

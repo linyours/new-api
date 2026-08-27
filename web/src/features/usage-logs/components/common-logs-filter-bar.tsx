@@ -116,6 +116,8 @@ export function CommonLogsFilterBar<TData>(
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const searchParams = route.useSearch()
+  const { section } = route.useParams()
+  const isErrorLogs = section === 'error'
   const { isAdminView: isAdmin } = useLogsViewScope()
   const { sensitiveVisible, setSensitiveVisible } = useUsageLogsContext()
   const fetchingLogs = useIsFetching({ queryKey: ['logs'] })
@@ -186,25 +188,30 @@ export function CommonLogsFilterBar<TData>(
   )
 
   const handleApply = useCallback(() => {
-    const filterParams = buildSearchParams(filters, 'common')
+    const filterParams = buildSearchParams(
+      filters,
+      isErrorLogs ? 'error' : 'common'
+    )
     navigate({
       to: '/usage-logs/$section',
-      params: { section: 'common' },
+      params: { section },
       search: {
         ...filterParams,
-        type: [logType],
+        ...(isErrorLogs ? {} : { type: [logType] }),
         page: 1,
       },
     })
     queryClient.invalidateQueries({ queryKey: ['logs'] })
-    queryClient.invalidateQueries({ queryKey: ['usage-logs-stats'] })
-  }, [filters, logType, navigate, queryClient])
+    if (!isErrorLogs) {
+      queryClient.invalidateQueries({ queryKey: ['usage-logs-stats'] })
+    }
+  }, [filters, isErrorLogs, logType, navigate, queryClient, section])
 
   const handleReset = useCallback(() => {
     const { start, end } = getDefaultTimeRange()
     const resetFilters: CommonLogFilters = { startTime: start, endTime: end }
     const resetSearch = {
-      type: [LOG_TYPE_ALL_VALUE],
+      ...(isErrorLogs ? {} : { type: [LOG_TYPE_ALL_VALUE] }),
       startTime: start.getTime(),
       endTime: end.getTime(),
     }
@@ -216,15 +223,17 @@ export function CommonLogsFilterBar<TData>(
 
     navigate({
       to: '/usage-logs/$section',
-      params: { section: 'common' },
+      params: { section },
       search: {
         page: 1,
         ...resetSearch,
       },
     })
     queryClient.invalidateQueries({ queryKey: ['logs'] })
-    queryClient.invalidateQueries({ queryKey: ['usage-logs-stats'] })
-  }, [navigate, queryClient])
+    if (!isErrorLogs) {
+      queryClient.invalidateQueries({ queryKey: ['usage-logs-stats'] })
+    }
+  }, [isErrorLogs, navigate, queryClient, section])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -240,7 +249,7 @@ export function CommonLogsFilterBar<TData>(
     !!filters.requestId ||
     !!filters.upstreamRequestId
 
-  const hasTypeFilter = logType !== LOG_TYPE_ALL_VALUE
+  const hasTypeFilter = !isErrorLogs && logType !== LOG_TYPE_ALL_VALUE
   const hasAdditionalFilters =
     !!filters.model || !!filters.group || hasTypeFilter || hasExpandedFilters
 
@@ -263,7 +272,7 @@ export function CommonLogsFilterBar<TData>(
   const logTypeLabel =
     logTypeItems.find((type) => type.value === logType)?.label ?? t('All Types')
 
-  const statsBar = (
+  const statsBar = isErrorLogs ? undefined : (
     <div className='flex flex-wrap items-center gap-2'>
       <CommonLogsStats />
     </div>
@@ -419,7 +428,7 @@ export function CommonLogsFilterBar<TData>(
           {dateRangeFilter}
           {modelFilter}
           {groupFilter}
-          {typeFilter}
+          {!isErrorLogs && typeFilter}
         </>
       }
       advancedFilters={advancedFilters}
@@ -428,7 +437,7 @@ export function CommonLogsFilterBar<TData>(
         <>
           {modelFilter}
           {groupFilter}
-          {typeFilter}
+          {!isErrorLogs && typeFilter}
           {advancedFilters}
         </>
       }

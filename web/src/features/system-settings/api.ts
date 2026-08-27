@@ -70,6 +70,44 @@ export async function getCurrentLogCleanupTask() {
   return res.data
 }
 
+export async function startErrorLogTruncateTask() {
+  const res = await api.post<SystemTaskResponse<LogCleanupTask>>(
+    '/api/system-task/error-log-truncate'
+  )
+  return res.data
+}
+
+export async function startErrorLogRetainTask(retainDays: number) {
+  const res = await api.post<SystemTaskResponse<LogCleanupTask>>(
+    '/api/system-task/error-log-retain',
+    null,
+    {
+      params: { retain_days: retainDays },
+    }
+  )
+  return res.data
+}
+
+export async function getCurrentErrorLogTruncateTask() {
+  const res = await api.get<SystemTaskResponse<LogCleanupTask | null>>(
+    '/api/system-task/current',
+    {
+      params: { type: 'error_log_truncate' },
+    }
+  )
+  return res.data
+}
+
+export async function getCurrentErrorLogRetainTask() {
+  const res = await api.get<SystemTaskResponse<LogCleanupTask | null>>(
+    '/api/system-task/current',
+    {
+      params: { type: 'error_log_retain' },
+    }
+  )
+  return res.data
+}
+
 export async function getSystemTask(taskId: string) {
   const res = await api.get<SystemTaskResponse<LogCleanupTask>>(
     `/api/system-task/${taskId}`

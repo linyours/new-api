@@ -82,17 +82,14 @@ func newProtectedFetchHTTPClientWithProxy(resolver ssrfResolver, dialContext fun
 	}
 
 	client := &http.Client{
-		Transport: &ssrfProtectedRoundTripper{
+		Transport: newRelayTimeoutRoundTripper(&ssrfProtectedRoundTripper{
 			resolver:      resolver,
 			dialContext:   dialContext,
 			getProtection: getProtection,
 			proxy:         proxy,
 			transports:    make(map[string]*http.Transport),
-		},
+		}),
 		CheckRedirect: checkProtectedFetchRedirect,
-	}
-	if common.RelayTimeout != 0 {
-		client.Timeout = time.Duration(common.RelayTimeout) * time.Second
 	}
 	return client
 }

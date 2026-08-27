@@ -107,12 +107,13 @@ export const LOG_TYPES = [
  */
 export const LOG_TYPE_FILTERS = [
   { label: 'All Types', value: LOG_TYPE_ALL_VALUE },
-  ...LOG_TYPES.filter((type) => type.value !== LOG_TYPE_ENUM.UNKNOWN).map(
-    (type) => ({
-      label: type.label,
-      value: String(type.value),
-    })
-  ),
+  ...LOG_TYPES.filter(
+    (type) =>
+      type.value !== LOG_TYPE_ENUM.UNKNOWN && type.value !== LOG_TYPE_ENUM.ERROR
+  ).map((type) => ({
+    label: type.label,
+    value: String(type.value),
+  })),
 ] as const
 
 // ============================================================================
@@ -337,6 +338,7 @@ export const LOG_CATEGORY_LABELS: Record<LogCategory, string> = {
   common: 'Common',
   drawing: 'Drawing',
   task: 'Task',
+  error: 'Error',
 }
 
 // ============================================================================

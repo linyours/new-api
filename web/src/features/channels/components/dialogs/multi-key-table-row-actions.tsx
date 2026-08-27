@@ -23,50 +23,91 @@ import { Button } from '@/components/ui/button'
 import type { MultiKeyConfirmAction } from '../../types'
 
 type MultiKeyTableRowActionsProps = {
+  keyId: number
   keyIndex: number
   status: number
+  canConfigure: boolean
   canDelete: boolean
   onAction: (action: MultiKeyConfirmAction) => void
+  onConfigure: (keyId: number) => void
+  onResetQuota: (keyId: number) => void
 }
 
-export function MultiKeyTableRowActions({
-  keyIndex,
-  status,
-  canDelete,
-  onAction,
-}: MultiKeyTableRowActionsProps) {
+export function MultiKeyTableRowActions(props: MultiKeyTableRowActionsProps) {
   const { t } = useTranslation()
-  const isEnabled = status === 1
+  const isEnabled = props.status === 1
+  const isQuotaExhausted = props.status === 4
+  let statusAction
+  if (isEnabled) {
+    statusAction = (
+      <Button
+        variant='outline'
+        size='sm'
+        onClick={() =>
+          props.onAction({ type: 'disable', keyIndex: props.keyIndex })
+        }
+      >
+        {t('Disable')}
+      </Button>
+    )
+  } else if (isQuotaExhausted) {
+    statusAction = (
+      <Button
+        variant='outline'
+        size='sm'
+        onClick={() => props.onResetQuota(props.keyId)}
+        disabled={!props.canConfigure}
+        title={
+          props.canConfigure
+            ? undefined
+            : t('No permission to perform this action')
+        }
+      >
+        {t('Reset quota')}
+      </Button>
+    )
+  } else {
+    statusAction = (
+      <Button
+        variant='outline'
+        size='sm'
+        onClick={() =>
+          props.onAction({ type: 'enable', keyIndex: props.keyIndex })
+        }
+      >
+        {t('Enable')}
+      </Button>
+    )
+  }
 
   return (
     <div className='flex justify-end gap-2'>
-      {isEnabled ? (
-        <Button
-          variant='outline'
-          size='sm'
-          onClick={() => onAction({ type: 'disable', keyIndex })}
-        >
-          {t('Disable')}
-        </Button>
-      ) : (
-        <Button
-          variant='outline'
-          size='sm'
-          onClick={() => onAction({ type: 'enable', keyIndex })}
-        >
-          {t('Enable')}
-        </Button>
-      )}
+      <Button
+        variant='outline'
+        size='sm'
+        onClick={() => props.onConfigure(props.keyId)}
+        disabled={!props.canConfigure}
+        title={
+          props.canConfigure
+            ? undefined
+            : t('No permission to perform this action')
+        }
+      >
+        {t('Limits')}
+      </Button>
+      {statusAction}
       <Button
         variant='destructive'
         size='sm'
         onClick={() => {
-          if (!canDelete) return
-          onAction({ type: 'delete', keyIndex })
+          if (!props.canDelete) return
+          props.onAction({ type: 'delete', keyIndex: props.keyIndex })
         }}
-        disabled={!canDelete}
+        disabled={!props.canDelete}
         title={
-          canDelete ? undefined : t('No permission to perform this action')
+          props.canDelete
+            ? undefined
+            : t('No permission to perform this action')
         }
       >
         {t('Delete')}

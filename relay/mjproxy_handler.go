@@ -189,6 +189,25 @@ func coverMidjourneyTaskDto(c *gin.Context, originTask *model.Midjourney) (midjo
 	return
 }
 
+// admitMidjourneyChannelKey applies the same stable per-key RPM and quota
+// admission used by the primary relay path. Midjourney has its own controller,
+// so admission must happen here immediately before its upstream dispatch.
+func admitMidjourneyChannelKey(c *gin.Context, info *relaycommon.RelayInfo, estimatedQuota int) *dto.MidjourneyResponse {
+	channel, err := model.CacheGetChannel(info.ChannelId)
+	if err != nil {
+		return &dto.MidjourneyResponse{Code: 4, Description: err.Error()}
+	}
+	if apiErr := service.AdmitChannelKey(c, info, channel, estimatedQuota); apiErr != nil {
+		return &dto.MidjourneyResponse{
+			Code:        30,
+			Description: apiErr.Error(),
+		}
+	}
+	// Admission can replace the provisional legacy credential with a sibling.
+	info.InitChannelMeta(c)
+	return nil
+}
+
 func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyResponse {
 	var swapFaceRequest dto.SwapFaceRequest
 	err := common.UnmarshalBodyReusable(c, &swapFaceRequest)
@@ -225,6 +244,10 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 			Description: "quota_not_enough",
 		}
 	}
+	if capacityErr := admitMidjourneyChannelKey(c, info, priceData.Quota); capacityErr != nil {
+		return capacityErr
+	}
+	defer service.ReleaseChannelKeyQuotaReservation(info)
 	requestURL := getMjRequestPath(c.Request.URL.String())
 	baseURL := c.GetString("base_url")
 	fullRequestURL := fmt.Sprintf("%s%s", baseURL, requestURL)
@@ -234,7 +257,7 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	}
 	defer func() {
 		if mjResp.StatusCode == 200 && mjResp.Response.Code == 1 {
-			err := service.PostConsumeQuota(info, priceData.Quota, 0, true)
+			err := service.SettleBilling(c, info, priceData.Quota)
 			if err != nil {
 				common.SysLog("error consuming token remain quota: " + err.Error())
 			}
@@ -532,6 +555,14 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			Description: "quota_not_enough",
 		}
 	}
+	estimatedQuota := 0
+	if consumeQuota {
+		estimatedQuota = priceData.Quota
+	}
+	if capacityErr := admitMidjourneyChannelKey(c, relayInfo, estimatedQuota); capacityErr != nil {
+		return capacityErr
+	}
+	defer service.ReleaseChannelKeyQuotaReservation(relayInfo)
 
 	midjResponseWithStatus, responseBody, err := service.DoMidjourneyHttpRequest(c, time.Second*60, fullRequestURL)
 	if err != nil {
@@ -541,7 +572,7 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 
 	defer func() {
 		if consumeQuota && midjResponseWithStatus.StatusCode == 200 {
-			err := service.PostConsumeQuota(relayInfo, priceData.Quota, 0, true)
+			err := service.SettleBilling(c, relayInfo, priceData.Quota)
 			if err != nil {
 				common.SysLog("error consuming token remain quota: " + err.Error())
 			}

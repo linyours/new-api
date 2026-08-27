@@ -48,6 +48,7 @@ import {
 import { SettingsPageFormActions } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
+import { safeNumberFieldProps } from '../utils/numeric-field'
 
 const thinkingBlacklistExample = JSON.stringify(
   ['moonshotai/kimi-k2-thinking', 'kimi-k2-thinking'],
@@ -96,6 +97,7 @@ const schema = z.object({
   general_setting: z.object({
     ping_interval_enabled: z.boolean(),
     ping_interval_seconds: z.coerce.number().min(1),
+    relay_timeout_seconds: z.coerce.number().int().min(0),
   }),
 })
 
@@ -108,6 +110,7 @@ type FlatGlobalModelSettings = {
   'global.chat_completions_to_responses_policy': string
   'general_setting.ping_interval_enabled': boolean
   'general_setting.ping_interval_seconds': number
+  'general_setting.relay_timeout_seconds': number
 }
 
 const flattenGlobalValues = (
@@ -127,6 +130,8 @@ const flattenGlobalValues = (
     values.general_setting.ping_interval_enabled,
   'general_setting.ping_interval_seconds':
     values.general_setting.ping_interval_seconds,
+  'general_setting.relay_timeout_seconds':
+    values.general_setting.relay_timeout_seconds,
 })
 
 function normalizeJsonText(value: string, fallback: string) {
@@ -201,7 +206,7 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
                 </SettingsSwitchContent>
                 <FormControl>
                   <Switch
-                    checked={field.value}
+                    checked={Boolean(field.value)}
                     onCheckedChange={field.onChange}
                   />
                 </FormControl>
@@ -320,6 +325,30 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
 
           <FormField
             control={form.control}
+            name='general_setting.relay_timeout_seconds'
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{t('Relay Timeout (seconds)')}</FormLabel>
+                <FormControl>
+                  <Input
+                    type='number'
+                    min={0}
+                    className='w-24'
+                    {...safeNumberFieldProps(field)}
+                  />
+                </FormControl>
+                <FormDescription>
+                  {t(
+                    'Hard limit for the entire upstream request, including waiting for the first byte and reading the response body. Long streaming replies stop when this limit is reached. Set to 0 for no limit.'
+                  )}
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
             name='general_setting.ping_interval_enabled'
             render={({ field }) => (
               <SettingsSwitchItem>
@@ -333,7 +362,7 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
                 </SettingsSwitchContent>
                 <FormControl>
                   <Switch
-                    checked={field.value}
+                    checked={Boolean(field.value)}
                     onCheckedChange={field.onChange}
                   />
                 </FormControl>

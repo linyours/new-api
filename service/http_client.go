@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"golang.org/x/net/proxy"
@@ -99,14 +101,82 @@ func newRelayHTTPTransport() *http.Transport {
 }
 
 func newRelayHTTPClient(transport http.RoundTripper) *http.Client {
-	client := &http.Client{
-		Transport:     transport,
+	// Timeout is applied per request from the current dashboard setting so
+	// cached clients pick up changes without being rebuilt.
+	return &http.Client{
+		Transport:     newRelayTimeoutRoundTripper(transport),
 		CheckRedirect: checkRedirect,
 	}
-	if common.RelayTimeout != 0 {
-		client.Timeout = time.Duration(common.RelayTimeout) * time.Second
+}
+
+type relayTimeoutRoundTripper struct {
+	base http.RoundTripper
+}
+
+func newRelayTimeoutRoundTripper(base http.RoundTripper) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
 	}
-	return client
+	return &relayTimeoutRoundTripper{base: base}
+}
+
+func (t *relayTimeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req == nil {
+		return t.base.RoundTrip(req)
+	}
+	duration := operation_setting.RelayTimeoutDuration()
+	if duration <= 0 {
+		return t.base.RoundTrip(req)
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), duration)
+	req = req.WithContext(ctx)
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if resp == nil {
+		cancel()
+		return resp, nil
+	}
+	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+func (t *relayTimeoutRoundTripper) CloseIdleConnections() {
+	type idleCloser interface {
+		CloseIdleConnections()
+	}
+	if closer, ok := t.base.(idleCloser); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
+type cancelOnCloseBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (b *cancelOnCloseBody) Close() error {
+	var err error
+	if b.ReadCloser != nil {
+		err = b.ReadCloser.Close()
+	}
+	if b.cancel != nil {
+		b.once.Do(b.cancel)
+	}
+	return err
+}
+
+func unwrapRelayTimeoutTransport(rt http.RoundTripper) http.RoundTripper {
+	for {
+		wrapper, ok := rt.(*relayTimeoutRoundTripper)
+		if !ok {
+			return rt
+		}
+		rt = wrapper.base
+	}
 }
 
 func clientCacheKey(proxyCacheKey string, policy HTTPTransportPolicy) string {

@@ -113,18 +113,26 @@ export function SettingsPage<
   const { t } = useTranslation()
   const { data, isLoading } = useSystemOptions()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const params = useParams({ from: routePath as any })
+  const params = useParams({
+    from: routePath as any,
+    shouldThrow: false,
+  })
   const activeSection = (params?.section ?? defaultSection) as TSectionId
   const sectionMeta = getSectionMeta(activeSection)
 
   const settings = useMemo(() => {
-    const baseSettings = getOptionValue(
-      data?.data,
-      defaultSettings
-    ) as TSettings
-    return resolveSettings
-      ? resolveSettings(baseSettings, data?.data)
-      : baseSettings
+    const rawOptions = Array.isArray(data?.data) ? data.data : undefined
+    try {
+      const baseSettings = getOptionValue(
+        rawOptions,
+        defaultSettings
+      ) as TSettings
+      return resolveSettings
+        ? resolveSettings(baseSettings, rawOptions)
+        : baseSettings
+    } catch {
+      return defaultSettings
+    }
   }, [data?.data, defaultSettings, resolveSettings])
 
   if (isLoading) {

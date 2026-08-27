@@ -177,6 +177,10 @@ func InitOptionMap() {
 	common.OptionMap["AutomaticRetryStatusCodes"] = operation_setting.AutomaticRetryStatusCodesToString()
 	common.OptionMap["ExposeRatioEnabled"] = strconv.FormatBool(ratio_setting.IsExposeRatioEnabled())
 
+	// Seed from RELAY_TIMEOUT so upgrades keep the previous env timeout until
+	// a dashboard value is saved. Database values overwrite this below.
+	operation_setting.ApplyEnvRelayTimeoutIfUnset(common.RelayTimeout)
+
 	// 自动添加所有注册的模型配置
 	modelConfigs := config.GlobalConfig.ExportAllConfigs()
 	for k, v := range modelConfigs {
@@ -185,6 +189,7 @@ func InitOptionMap() {
 
 	common.OptionMapRWMutex.Unlock()
 	loadOptionsFromDatabase()
+	persistEnvRelayTimeoutIfMissing()
 }
 
 func loadOptionsFromDatabase() {
@@ -205,12 +210,40 @@ func SyncOptions(frequency int) {
 	}
 }
 
+func persistEnvRelayTimeoutIfMissing() {
+	if DB == nil {
+		return
+	}
+	options, err := AllOption()
+	if err != nil {
+		return
+	}
+	for _, option := range options {
+		if option != nil && option.Key == operation_setting.RelayTimeoutOptionKey {
+			return
+		}
+	}
+	seconds := operation_setting.GetGeneralSetting().RelayTimeoutSeconds
+	if seconds <= 0 {
+		return
+	}
+	if err := UpdateOption(operation_setting.RelayTimeoutOptionKey, strconv.Itoa(seconds)); err != nil {
+		common.SysLog("failed to persist relay timeout from RELAY_TIMEOUT: " + err.Error())
+	}
+}
+
 func validateOptionValue(key string, value string) error {
 	if key == operation_setting.ToolPriceOptionKey {
 		return operation_setting.ValidateToolPricesJSON(value)
 	}
 	if key == "MaxTokenAutoGroups" {
 		return setting.ValidateMaxTokenAutoGroups(value)
+	}
+	if key == operation_setting.RelayTimeoutOptionKey {
+		return operation_setting.ValidateRelayTimeoutSeconds(value)
+	}
+	if key == "error_log_setting.retain_days" {
+		return operation_setting.ValidateErrorLogRetainDays(value)
 	}
 	return nil
 }
@@ -636,6 +669,8 @@ func handleConfigUpdate(key, value string) bool {
 	} else if configName == "billing_setting" {
 		InvalidatePricingCache()
 		ratio_setting.InvalidateExposedDataCache()
+	} else if configName == "error_log_setting" {
+		SyncClickHouseErrorLogTTL()
 	}
 
 	return true // 已处理

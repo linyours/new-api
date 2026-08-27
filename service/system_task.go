@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
 )
@@ -20,11 +21,13 @@ const (
 	systemTaskRunnerIdleInterval = 15 * time.Second
 	systemTaskLockTTL            = 60 * time.Second
 	logCleanupBatchSize          = 100
+	errorLogCleanupBatchSize     = 1000
 
 	// systemTaskSchedulerInterval throttles how often the scheduler/stale-lock
 	// pass runs, independent of how often the runner wakes to claim tasks.
 	systemTaskSchedulerInterval = 15 * time.Second
 	systemTaskStaleLockInterval = 30 * time.Second
+	errorLogRetainInterval      = 24 * time.Hour
 )
 
 // SystemTaskHandler executes a claimed task of a specific type. Run owns the
@@ -85,6 +88,8 @@ func (logCleanupHandler) Run(ctx context.Context, task *model.SystemTask, runner
 
 func init() {
 	RegisterSystemTaskHandler(logCleanupHandler{})
+	RegisterSystemTaskHandler(errorLogTruncateHandler{})
+	RegisterSystemTaskHandler(errorLogRetainHandler{})
 }
 
 type LogCleanupPayload struct {
@@ -193,6 +198,276 @@ func StartLogCleanupTask(targetTimestamp int64) (*model.SystemTask, error) {
 	}
 	notifySystemTaskRunner()
 	return task, nil
+}
+
+type ErrorLogCleanupResult struct {
+	DeletedCount int64 `json:"deleted_count"`
+}
+
+type errorLogTruncateHandler struct{}
+
+func (errorLogTruncateHandler) Type() string { return model.SystemTaskTypeErrorLogTruncate }
+
+func (errorLogTruncateHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	runErrorLogTruncateTask(ctx, task, runnerID)
+}
+
+type ErrorLogRetainPayload struct {
+	RetainDays int `json:"retain_days"`
+	BatchSize  int `json:"batch_size"`
+}
+
+type errorLogRetainHandler struct{}
+
+func (errorLogRetainHandler) Type() string { return model.SystemTaskTypeErrorLogRetain }
+
+func (errorLogRetainHandler) Enabled() bool {
+	if !operation_setting.GetErrorLogSetting().AutoCleanupEnabled {
+		return false
+	}
+	activeTruncate, err := model.GetActiveSystemTask(model.SystemTaskTypeErrorLogTruncate)
+	if err != nil || activeTruncate != nil {
+		return false
+	}
+	return true
+}
+
+func (errorLogRetainHandler) Interval() time.Duration { return errorLogRetainInterval }
+
+func (errorLogRetainHandler) NewPayload() any {
+	return ErrorLogRetainPayload{
+		RetainDays: operation_setting.GetErrorLogSetting().RetainDays,
+		BatchSize:  errorLogCleanupBatchSize,
+	}
+}
+
+func (errorLogRetainHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	runErrorLogRetainTask(ctx, task, runnerID)
+}
+
+func StartErrorLogTruncateTask() (*model.SystemTask, error) {
+	if err := rejectActiveErrorLogTask(model.SystemTaskTypeErrorLogRetain, "error log retain is already running"); err != nil {
+		return nil, err
+	}
+	if active, err := model.GetActiveSystemTask(model.SystemTaskTypeErrorLogTruncate); err != nil {
+		return nil, err
+	} else if active != nil {
+		return active, nil
+	}
+	state := LogCleanupState{}
+	task, err := model.CreateSystemTask(model.SystemTaskTypeErrorLogTruncate, nil, state)
+	if err != nil {
+		if active, activeErr := model.GetActiveSystemTask(model.SystemTaskTypeErrorLogTruncate); activeErr == nil && active != nil {
+			return active, nil
+		}
+		return nil, err
+	}
+	notifySystemTaskRunner()
+	return task, nil
+}
+
+func StartErrorLogRetainTask(retainDays int) (*model.SystemTask, error) {
+	if retainDays <= 0 {
+		retainDays = operation_setting.GetErrorLogSetting().RetainDays
+	}
+	if err := operation_setting.ValidateErrorLogRetainDaysInt(retainDays); err != nil {
+		return nil, err
+	}
+	if err := rejectActiveErrorLogTask(model.SystemTaskTypeErrorLogTruncate, "error log truncate is already running"); err != nil {
+		return nil, err
+	}
+	if active, err := model.GetActiveSystemTask(model.SystemTaskTypeErrorLogRetain); err != nil {
+		return nil, err
+	} else if active != nil {
+		return active, nil
+	}
+	payload := ErrorLogRetainPayload{
+		RetainDays: retainDays,
+		BatchSize:  errorLogCleanupBatchSize,
+	}
+	state := LogCleanupState{}
+	task, err := model.CreateSystemTask(model.SystemTaskTypeErrorLogRetain, payload, state)
+	if err != nil {
+		if active, activeErr := model.GetActiveSystemTask(model.SystemTaskTypeErrorLogRetain); activeErr == nil && active != nil {
+			return active, nil
+		}
+		return nil, err
+	}
+	notifySystemTaskRunner()
+	return task, nil
+}
+
+func rejectActiveErrorLogTask(taskType string, message string) error {
+	active, err := model.GetActiveSystemTask(taskType)
+	if err != nil {
+		return err
+	}
+	if active != nil {
+		return errors.New(message)
+	}
+	return nil
+}
+
+func runErrorLogTruncateTask(ctx context.Context, task *model.SystemTask, runnerID string) {
+	if err := ensureNoActiveErrorLogCleanupExcept(model.SystemTaskTypeErrorLogTruncate); err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	state := LogCleanupState{}
+	if err := task.DecodeState(&state); err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	count, err := model.CountErrorLogs(ctx)
+	if err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	state.Total = count
+	state.Remaining = count
+	state.Progress = logCleanupProgress(state.Processed, state.Total)
+	if err := model.UpdateSystemTaskState(task.TaskID, runnerID, state); err != nil {
+		logSystemTaskLockError(ctx, task, err)
+		return
+	}
+	if err := model.TruncateErrorLogs(ctx); err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	state.Processed = count
+	state.Remaining = 0
+	state.Progress = 100
+	if err := model.UpdateSystemTaskState(task.TaskID, runnerID, state); err != nil {
+		logSystemTaskLockError(ctx, task, err)
+		return
+	}
+	if err := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusSucceeded, ErrorLogCleanupResult{DeletedCount: count}, ""); err != nil {
+		logSystemTaskLockError(ctx, task, err)
+	}
+}
+
+func runErrorLogRetainTask(ctx context.Context, task *model.SystemTask, runnerID string) {
+	if err := ensureNoActiveErrorLogCleanupExcept(model.SystemTaskTypeErrorLogRetain); err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	payload := ErrorLogRetainPayload{}
+	if err := task.DecodePayload(&payload); err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	state := LogCleanupState{}
+	if err := task.DecodeState(&state); err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	if payload.RetainDays <= 0 {
+		payload.RetainDays = operation_setting.GetErrorLogSetting().RetainDays
+	}
+	if err := operation_setting.ValidateErrorLogRetainDaysInt(payload.RetainDays); err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	if payload.BatchSize <= 0 {
+		payload.BatchSize = errorLogCleanupBatchSize
+	}
+	cutoff := time.Now().AddDate(0, 0, -payload.RetainDays).Unix()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		remaining, err := model.CountErrorLogsBefore(ctx, cutoff)
+		if err != nil {
+			failSystemTask(task, runnerID, err)
+			return
+		}
+		syncLogCleanupStateFromRemaining(&state, remaining)
+		if err := model.UpdateSystemTaskState(task.TaskID, runnerID, state); err != nil {
+			logSystemTaskLockError(ctx, task, err)
+			return
+		}
+		if state.Remaining == 0 {
+			break
+		}
+		progressed := false
+		for state.Remaining > 0 {
+			if ctx.Err() != nil {
+				return
+			}
+			rowsAffected, err := model.DeleteErrorLogsBeforeBatch(ctx, cutoff, payload.BatchSize)
+			if err != nil {
+				failSystemTask(task, runnerID, err)
+				return
+			}
+			if rowsAffected == 0 {
+				break
+			}
+			progressed = true
+			state.Processed += rowsAffected
+			if state.Total < state.Processed {
+				state.Total = state.Processed
+			}
+			if state.Remaining > rowsAffected {
+				state.Remaining -= rowsAffected
+			} else {
+				state.Remaining = 0
+			}
+			state.Progress = logCleanupProgress(state.Processed, state.Total)
+			if err := model.UpdateSystemTaskState(task.TaskID, runnerID, state); err != nil {
+				logSystemTaskLockError(ctx, task, err)
+				return
+			}
+			if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+				break
+			}
+		}
+		if !progressed {
+			if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+				// Remaining rows sit in the cutoff day's partition and are
+				// left until the next daily drop (up to ~24h). That is expected.
+				break
+			}
+			failSystemTask(task, runnerID, errors.New("no error log rows were deleted"))
+			return
+		}
+		if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+			break
+		}
+	}
+	state.Remaining = 0
+	state.Progress = 100
+	if state.Total < state.Processed {
+		state.Total = state.Processed
+	}
+	if err := model.UpdateSystemTaskState(task.TaskID, runnerID, state); err != nil {
+		logSystemTaskLockError(ctx, task, err)
+		return
+	}
+	if err := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusSucceeded, ErrorLogCleanupResult{DeletedCount: state.Processed}, ""); err != nil {
+		logSystemTaskLockError(ctx, task, err)
+	}
+}
+
+func ensureNoActiveErrorLogCleanupExcept(taskType string) error {
+	if taskType != model.SystemTaskTypeErrorLogTruncate {
+		truncateTask, err := model.GetActiveSystemTask(model.SystemTaskTypeErrorLogTruncate)
+		if err != nil {
+			return err
+		}
+		if truncateTask != nil {
+			return errors.New("error log truncate is already running")
+		}
+	}
+	if taskType != model.SystemTaskTypeErrorLogRetain {
+		retainTask, err := model.GetActiveSystemTask(model.SystemTaskTypeErrorLogRetain)
+		if err != nil {
+			return err
+		}
+		if retainTask != nil {
+			return errors.New("error log retain is already running")
+		}
+	}
+	return nil
 }
 
 // EnqueueSystemTask creates an on-demand task of the given type. The returned

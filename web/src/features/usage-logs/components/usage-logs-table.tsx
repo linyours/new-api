@@ -174,7 +174,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     ensurePageInRange,
   })
 
-  const isCommon = logCategory === 'common'
+  const isRecordLog = logCategory === 'common' || logCategory === 'error'
 
   return (
     <DataTablePage
@@ -183,9 +183,13 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
       isLoading={isLoadingData}
       isFetching={isFetching}
       emptyTitle={t('No Logs Found')}
-      emptyDescription={t(
-        'No usage logs available. Logs will appear here once API calls are made.'
-      )}
+      emptyDescription={
+        logCategory === 'error'
+          ? t('No error logs available. Failed requests will appear here.')
+          : t(
+              'No usage logs available. Logs will appear here once API calls are made.'
+            )
+      }
       skeletonKeyPrefix='usage-log-skeleton'
       applyHeaderSize
       tableClassName={cn(
@@ -199,7 +203,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
         />
       }
       toolbar={
-        isCommon ? (
+        isRecordLog ? (
           <CommonLogsFilterBar table={table} />
         ) : (
           <TaskLogsFilterBar table={table} logCategory={logCategory} />
@@ -210,8 +214,8 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
           | number
           | undefined
         let tintClass =
-          isCommon && logType != null ? (logTypeRowTint[logType] ?? '') : ''
-        if (isCommon && isAdmin) {
+          isRecordLog && logType != null ? (logTypeRowTint[logType] ?? '') : ''
+        if (isRecordLog && isAdmin) {
           const other = parseLogOther(
             ((row.original as Record<string, unknown>).other as string) ?? ''
           )
@@ -225,7 +229,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
             key={row.id}
             row={row}
             className={cn('transition-colors', tintClass)}
-            getColumnClassName={() => (isCommon ? 'py-2' : 'py-3.5')}
+            getColumnClassName={() => (isRecordLog ? 'py-2' : 'py-3.5')}
           />
         )
       }}

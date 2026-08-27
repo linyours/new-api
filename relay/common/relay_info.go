@@ -60,6 +60,10 @@ type ChannelMeta struct {
 	ChannelId            int
 	ChannelIsMultiKey    bool
 	ChannelMultiKeyIndex int
+	// ChannelKeyId is the stable database identity used for per-key RPM,
+	// quota accounting and delayed task settlement. MultiKeyIndex remains only
+	// for display/backward compatibility because indexes change after edits.
+	ChannelKeyId         int64
 	ChannelBaseUrl       string
 	ApiType              int
 	ApiVersion           string
@@ -163,6 +167,13 @@ type RelayInfo struct {
 	// It is surfaced onto the consume/task log's admin_info for auditing.
 	QuotaClamp *common.QuotaClamp
 
+	// ChannelKeyQuotaReservationId identifies the per-key budget reservation
+	// owned by the current upstream attempt. Settlement and release are
+	// idempotent, so retries can safely replace this value after releasing the
+	// previous attempt.
+	ChannelKeyQuotaReservationId int64
+	ChannelKeyQuotaSettled       bool
+
 	// TieredBillingSnapshot captures tiered billing rules at pre-consume time.
 	// Auto-group retries refresh its group-dependent fields before each attempt
 	// and again before settlement. Non-nil only when billing mode is "tiered_expr".
@@ -196,12 +207,14 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)
 	paramOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelParamOverride)
 	headerOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelHeaderOverride)
+	channelKeyId, _ := common.GetContextKeyType[int64](c, constant.ContextKeyChannelKeyId)
 	apiType, _ := common.ChannelType2APIType(channelType)
 	channelMeta := &ChannelMeta{
 		ChannelType:          channelType,
 		ChannelId:            common.GetContextKeyInt(c, constant.ContextKeyChannelId),
 		ChannelIsMultiKey:    common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey),
 		ChannelMultiKeyIndex: common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex),
+		ChannelKeyId:         channelKeyId,
 		ChannelBaseUrl:       common.GetContextKeyString(c, constant.ContextKeyChannelBaseUrl),
 		ApiType:              apiType,
 		ApiVersion:           c.GetString("api_version"),

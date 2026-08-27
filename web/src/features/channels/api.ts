@@ -467,6 +467,34 @@ export async function deleteDisabledMultiKeys(
   }) as Promise<{ success: boolean; message?: string; data?: number }>
 }
 
+export async function updateChannelKeyLimits(
+  channelId: number,
+  keyId: number,
+  rpmLimit: number | null,
+  quotaLimit: number | null,
+  modelRpmLimits: Record<string, number>
+): Promise<{ success: boolean; message?: string }> {
+  return manageMultiKeys({
+    channel_id: channelId,
+    action: 'update_key_limits',
+    key_id: keyId,
+    rpm_limit: rpmLimit,
+    quota_limit: quotaLimit,
+    model_rpm_limits: modelRpmLimits,
+  }) as Promise<{ success: boolean; message?: string }>
+}
+
+export async function resetChannelKeyQuota(
+  channelId: number,
+  keyId: number
+): Promise<{ success: boolean; message?: string }> {
+  return manageMultiKeys({
+    channel_id: channelId,
+    action: 'reset_key_quota',
+    key_id: keyId,
+  }) as Promise<{ success: boolean; message?: string }>
+}
+
 // ============================================================================
 // Tag Operations
 // ============================================================================

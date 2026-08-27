@@ -98,6 +98,12 @@ const OPERATIONS_SECTIONS = [
     build: (settings: OperationsSettings) => (
       <LogSettingsSection
         defaultEnabled={Boolean(settings.LogConsumeEnabled)}
+        defaultAutoCleanupEnabled={Boolean(
+          settings['error_log_setting.auto_cleanup_enabled']
+        )}
+        defaultRetainDays={
+          Number(settings['error_log_setting.retain_days'] ?? 3) || 3
+        }
       />
     ),
   },

@@ -54,7 +54,7 @@ export type ScrollLayerSynchronizer = {
 }
 
 export function getJsonValidationState(value: string): JsonValidationState {
-  const trimmed = value.trim()
+  const trimmed = (value ?? '').toString().trim()
   if (!trimmed) {
     return { isValid: true, messageKey: 'JSON' }
   }

@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
-	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
 
@@ -136,9 +136,35 @@ func GetLogByTokenId(tokenId int) (logs []*Log, err error) {
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		order = clickHouseLogOrder("")
 	}
-	err = LOG_DB.Model(&Log{}).Where("token_id = ?", tokenId).Order(order).Limit(common.MaxRecentItems).Find(&logs).Error
+	var usageLogs []*Log
+	err = LOG_DB.Table("logs").Where("token_id = ?", tokenId).Order(order).Limit(common.MaxRecentItems).Find(&usageLogs).Error
+	if err != nil {
+		return nil, err
+	}
+	var errorLogs []*Log
+	err = LOG_DB.Table(errorLogsTable).Where("token_id = ?", tokenId).Order(order).Limit(common.MaxRecentItems).Find(&errorLogs).Error
+	if err != nil {
+		return nil, err
+	}
+	logs = mergeLogsByCreatedAt(usageLogs, errorLogs, common.MaxRecentItems)
 	formatUserLogs(logs, 0)
-	return logs, err
+	return logs, nil
+}
+
+func mergeLogsByCreatedAt(left []*Log, right []*Log, limit int) []*Log {
+	merged := make([]*Log, 0, len(left)+len(right))
+	merged = append(merged, left...)
+	merged = append(merged, right...)
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].CreatedAt == merged[j].CreatedAt {
+			return merged[i].Id > merged[j].Id
+		}
+		return merged[i].CreatedAt > merged[j].CreatedAt
+	})
+	if limit > 0 && len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged
 }
 
 func RecordLog(userId int, logType int, content string) {
@@ -319,9 +345,9 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
 	}
-	err := createLog(log)
+	err := createErrorLog(log)
 	if err != nil {
-		logger.LogError(c, "failed to record log: "+err.Error())
+		logger.LogError(c, "failed to record error log: "+err.Error())
 	}
 }
 
@@ -466,12 +492,7 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 }
 
 func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
-	var tx *gorm.DB
-	if logType == LogTypeUnknown {
-		tx = LOG_DB
-	} else {
-		tx = LOG_DB.Where("logs.type = ?", logType)
-	}
+	tx := newLogListTx(logType)
 
 	if tx, err = applyExplicitLogTextFilter(tx, "logs.model_name", modelName); err != nil {
 		return nil, 0, err
@@ -500,7 +521,7 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 	if group != "" {
 		tx = tx.Where("logs."+logGroupCol+" = ?", group)
 	}
-	err = tx.Model(&Log{}).Count(&total).Error
+	err = tx.Count(&total).Error
 	if err != nil {
 		return nil, 0, err
 	}
@@ -516,44 +537,8 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 		assignDisplayLogIds(logs, startIdx)
 	}
 
-	channelIds := types.NewSet[int]()
-	for _, log := range logs {
-		if log.ChannelId != 0 {
-			channelIds.Add(log.ChannelId)
-		}
-	}
-
-	if channelIds.Len() > 0 {
-		var channels []struct {
-			Id   int    `gorm:"column:id"`
-			Name string `gorm:"column:name"`
-		}
-		if common.MemoryCacheEnabled {
-			// Cache get channel
-			for _, channelId := range channelIds.Items() {
-				if cacheChannel, err := CacheGetChannel(channelId); err == nil {
-					channels = append(channels, struct {
-						Id   int    `gorm:"column:id"`
-						Name string `gorm:"column:name"`
-					}{
-						Id:   channelId,
-						Name: cacheChannel.Name,
-					})
-				}
-			}
-		} else {
-			// Bulk query channels from DB
-			if err = DB.Table("channels").Select("id, name").Where("id IN ?", channelIds.Items()).Find(&channels).Error; err != nil {
-				return logs, total, err
-			}
-		}
-		channelMap := make(map[int]string, len(channels))
-		for _, channel := range channels {
-			channelMap[channel.Id] = channel.Name
-		}
-		for i := range logs {
-			logs[i].ChannelName = channelMap[logs[i].ChannelId]
-		}
+	if err = attachLogChannelNames(logs); err != nil {
+		return logs, total, err
 	}
 
 	return logs, total, err
@@ -562,12 +547,7 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 const logSearchCountLimit = 10000
 
 func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
-	var tx *gorm.DB
-	if logType == LogTypeUnknown {
-		tx = LOG_DB.Where("logs.user_id = ?", userId)
-	} else {
-		tx = LOG_DB.Where("logs.user_id = ? and logs.type = ?", userId, logType)
-	}
+	tx := newLogListTx(logType).Where("logs.user_id = ?", userId)
 
 	if tx, err = applyExplicitLogTextFilter(tx, "logs.model_name", modelName); err != nil {
 		return nil, 0, err
@@ -590,7 +570,7 @@ func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int
 	if group != "" {
 		tx = tx.Where("logs."+logGroupCol+" = ?", group)
 	}
-	err = tx.Model(&Log{}).Limit(logSearchCountLimit).Count(&total).Error
+	err = tx.Limit(logSearchCountLimit).Count(&total).Error
 	if err != nil {
 		common.SysError("failed to count user logs: " + err.Error())
 		return nil, 0, errors.New("查询日志失败")
@@ -607,6 +587,53 @@ func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int
 
 	formatUserLogs(logs, startIdx)
 	return logs, total, err
+}
+
+func attachLogChannelNames(logs []*Log) error {
+	channelIds := make([]int, 0)
+	seen := make(map[int]struct{})
+	for _, log := range logs {
+		if log == nil || log.ChannelId == 0 {
+			continue
+		}
+		if _, ok := seen[log.ChannelId]; ok {
+			continue
+		}
+		seen[log.ChannelId] = struct{}{}
+		channelIds = append(channelIds, log.ChannelId)
+	}
+	if len(channelIds) == 0 {
+		return nil
+	}
+
+	var channels []struct {
+		Id   int    `gorm:"column:id"`
+		Name string `gorm:"column:name"`
+	}
+	if common.MemoryCacheEnabled {
+		for _, channelId := range channelIds {
+			if cacheChannel, err := CacheGetChannel(channelId); err == nil {
+				channels = append(channels, struct {
+					Id   int    `gorm:"column:id"`
+					Name string `gorm:"column:name"`
+				}{
+					Id:   channelId,
+					Name: cacheChannel.Name,
+				})
+			}
+		}
+	} else if err := DB.Table("channels").Select("id, name").Where("id IN ?", channelIds).Find(&channels).Error; err != nil {
+		return err
+	}
+
+	channelMap := make(map[int]string, len(channels))
+	for _, channel := range channels {
+		channelMap[channel.Id] = channel.Name
+	}
+	for i := range logs {
+		logs[i].ChannelName = channelMap[logs[i].ChannelId]
+	}
+	return nil
 }
 
 type Stat struct {

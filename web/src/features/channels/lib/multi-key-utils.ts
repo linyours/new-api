@@ -55,6 +55,8 @@ export function getMultiKeyConfirmMessage(
       return MULTI_KEY_CONFIRM_MESSAGES.DISABLE_ALL
     case 'delete-disabled':
       return MULTI_KEY_CONFIRM_MESSAGES.DELETE_DISABLED
+    case 'reset-quota':
+      return MULTI_KEY_CONFIRM_MESSAGES.RESET_QUOTA
     default:
       return ''
   }

@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -475,6 +476,12 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 	if channel == nil {
 		return fmt.Errorf("channel cannot be empty")
 	}
+	if channel.KeyRpmLimit < 0 {
+		return fmt.Errorf("key RPM limit cannot be negative")
+	}
+	if channel.KeyQuotaLimit < 0 || channel.KeyQuotaLimit > int64(common.MaxQuota) {
+		return fmt.Errorf("key quota limit must be between 0 and %d", common.MaxQuota)
+	}
 
 	// 校验 channel settings
 	if err := channel.ValidateSettings(); err != nil {
@@ -701,6 +708,7 @@ func AddChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	model.InitChannelCache()
 	recordManageAudit(c, "channel.create", map[string]interface{}{
 		"name":  addChannelRequest.Channel.Name,
 		"type":  addChannelRequest.Channel.Type,
@@ -983,6 +991,12 @@ func UpdateChannel(c *gin.Context) {
 	}
 	originProxy := originChannel.GetSetting().Proxy
 	proxyChanged := false
+	if _, provided := requestData["key_rpm_limit"]; !provided {
+		channel.KeyRpmLimit = originChannel.KeyRpmLimit
+	}
+	if _, provided := requestData["key_quota_limit"]; !provided {
+		channel.KeyQuotaLimit = originChannel.KeyQuotaLimit
+	}
 	if _, settingProvided := requestData["setting"]; settingProvided {
 		newProxy, _ := service.NormalizeProxyURL(channel.GetSetting().Proxy)
 		normalizedOriginProxy, originProxyErr := service.NormalizeProxyURL(originProxy)
@@ -1396,7 +1410,7 @@ func GetTagModels(c *gin.Context) {
 	return
 }
 
-// CopyChannel handles cloning an existing channel with its key.
+// CopyChannel handles cloning an existing channel with its keys and per-key limits.
 // POST /api/channel/copy/:id
 // Optional query params:
 //
@@ -1449,6 +1463,14 @@ func CopyChannel(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "复制渠道失败，请稍后重试"})
 		return
 	}
+	if err := model.CopyChannelKeyLimits(origin.Id, clone.Id); err != nil {
+		common.SysError("failed to copy channel key limits: " + err.Error())
+		if delErr := clone.Delete(); delErr != nil {
+			common.SysError("failed to roll back copied channel: " + delErr.Error())
+		}
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "复制渠道失败，请稍后重试"})
+		return
+	}
 	model.InitChannelCache()
 	recordManageAudit(c, "channel.copy", map[string]interface{}{
 		"sourceId": id,
@@ -1461,12 +1483,17 @@ func CopyChannel(c *gin.Context) {
 
 // MultiKeyManageRequest represents the request for multi-key management operations
 type MultiKeyManageRequest struct {
-	ChannelId int    `json:"channel_id"`
-	Action    string `json:"action"`              // "disable_key", "enable_key", "delete_key", "delete_disabled_keys", "get_key_status"
-	KeyIndex  *int   `json:"key_index,omitempty"` // for disable_key, enable_key, and delete_key actions
-	Page      int    `json:"page,omitempty"`      // for get_key_status pagination
-	PageSize  int    `json:"page_size,omitempty"` // for get_key_status pagination
-	Status    *int   `json:"status,omitempty"`    // for get_key_status filtering: 1=enabled, 2=manual_disabled, 3=auto_disabled, nil=all
+	ChannelId      int                             `json:"channel_id"`
+	Action         string                          `json:"action"`
+	KeyIndex       *int                            `json:"key_index,omitempty"` // for disable_key, enable_key, and delete_key actions
+	KeyId          *int64                          `json:"key_id,omitempty"`
+	ArchiveId      *int64                          `json:"archive_id,omitempty"`
+	RpmLimit       *int                            `json:"rpm_limit"`
+	QuotaLimit     *int64                          `json:"quota_limit"`
+	ModelRpmLimits *model.ChannelKeyModelRpmLimits `json:"model_rpm_limits,omitempty"`
+	Page           int                             `json:"page,omitempty"`      // for get_key_status pagination
+	PageSize       int                             `json:"page_size,omitempty"` // for get_key_status pagination
+	Status         *int                            `json:"status,omitempty"`    // for get_key_status filtering: 1=enabled, 2=manual_disabled, 3=auto_disabled, nil=all
 }
 
 // MultiKeyStatusResponse represents the response for key status query
@@ -1483,11 +1510,45 @@ type MultiKeyStatusResponse struct {
 }
 
 type KeyStatus struct {
-	Index        int    `json:"index"`
-	Status       int    `json:"status"` // 1: enabled, 2: disabled
-	DisabledTime int64  `json:"disabled_time,omitempty"`
-	Reason       string `json:"reason,omitempty"`
-	KeyPreview   string `json:"key_preview"` // first 10 chars of key for identification
+	Id             int64                          `json:"id"`
+	Index          int                            `json:"index"`
+	Status         int                            `json:"status"`
+	DisabledTime   int64                          `json:"disabled_time,omitempty"`
+	Reason         string                         `json:"reason,omitempty"`
+	KeyPreview     string                         `json:"key_preview"`
+	RpmLimit       *int                           `json:"rpm_limit"`
+	EffectiveRpm   int                            `json:"effective_rpm"`
+	ModelRpmLimits model.ChannelKeyModelRpmLimits `json:"model_rpm_limits"`
+	QuotaLimit     *int64                         `json:"quota_limit"`
+	EffectiveQuota int64                          `json:"effective_quota"`
+	QuotaUsed      int64                          `json:"quota_used"`
+	QuotaReserved  int64                          `json:"quota_reserved"`
+	LifetimeQuota  int64                          `json:"lifetime_quota"`
+	ExhaustedTime  int64                          `json:"exhausted_time,omitempty"`
+}
+
+type ArchivedKeyStatus struct {
+	ArchiveId      int64                          `json:"archive_id"`
+	OriginalKeyId  int64                          `json:"original_key_id"`
+	Index          int                            `json:"index"`
+	KeyPreview     string                         `json:"key_preview"`
+	RpmLimit       *int                           `json:"rpm_limit"`
+	ModelRpmLimits model.ChannelKeyModelRpmLimits `json:"model_rpm_limits"`
+	QuotaLimit     *int64                         `json:"quota_limit"`
+	EffectiveQuota int64                          `json:"effective_quota"`
+	QuotaUsed      int64                          `json:"quota_used"`
+	LifetimeQuota  int64                          `json:"lifetime_quota"`
+	Reason         string                         `json:"reason"`
+	ExhaustedTime  int64                          `json:"exhausted_time"`
+	ArchivedTime   int64                          `json:"archived_time"`
+}
+
+type ChannelKeyArchiveResponse struct {
+	Keys       []ArchivedKeyStatus `json:"keys"`
+	Total      int                 `json:"total"`
+	Page       int                 `json:"page"`
+	PageSize   int                 `json:"page_size"`
+	TotalPages int                 `json:"total_pages"`
 }
 
 // ManageMultiKeys handles multi-key management operations
@@ -1508,7 +1569,12 @@ func ManageMultiKeys(c *gin.Context) {
 		return
 	}
 
-	if !channel.ChannelInfo.IsMultiKey {
+	if !channel.ChannelInfo.IsMultiKey &&
+		request.Action != "get_key_status" &&
+		request.Action != "get_key_archives" &&
+		request.Action != "update_key_limits" &&
+		request.Action != "reset_key_quota" &&
+		request.Action != "restore_archived_key" {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "该渠道不是多密钥模式",
@@ -1520,9 +1586,16 @@ func ManageMultiKeys(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgAuthInsufficientPrivilege)
 		return
 	}
+	if (request.Action == "update_key_limits" ||
+		request.Action == "reset_key_quota" ||
+		request.Action == "restore_archived_key") &&
+		!authz.Can(c.GetInt("id"), c.GetInt("role"), authz.ChannelWrite) {
+		common.ApiErrorI18n(c, i18n.MsgAuthInsufficientPrivilege)
+		return
+	}
 
 	// get_key_status 为只读查询，不记录审计；其余为修改操作，记录审计并跳过中间件兜底。
-	if request.Action == "get_key_status" {
+	if request.Action == "get_key_status" || request.Action == "get_key_archives" {
 		markAuditLogged(c)
 	} else {
 		recordManageAudit(c, "channel.multi_key_manage", map[string]interface{}{
@@ -1537,115 +1610,112 @@ func ManageMultiKeys(c *gin.Context) {
 
 	switch request.Action {
 	case "get_key_status":
-		keys := channel.GetKeys()
-
-		// Default pagination parameters
 		page := request.Page
 		pageSize := request.PageSize
 		if page <= 0 {
 			page = 1
 		}
-		if pageSize <= 0 {
-			pageSize = 50 // Default page size
+		if pageSize <= 0 || pageSize > 200 {
+			pageSize = 50
 		}
-
-		// Statistics for all keys (unchanged by filtering)
-		var enabledCount, manualDisabledCount, autoDisabledCount int
-
-		// Build all key status data first
-		var allKeyStatusList []KeyStatus
-		for i, key := range keys {
-			status := 1 // default enabled
-			var disabledTime int64
-			var reason string
-
-			if channel.ChannelInfo.MultiKeyStatusList != nil {
-				if s, exists := channel.ChannelInfo.MultiKeyStatusList[i]; exists {
-					status = s
-				}
-			}
-
-			// Count for statistics (all keys)
-			switch status {
-			case 1:
-				enabledCount++
-			case 2:
-				manualDisabledCount++
-			case 3:
-				autoDisabledCount++
-			}
-
-			if status != 1 {
-				if channel.ChannelInfo.MultiKeyDisabledTime != nil {
-					disabledTime = channel.ChannelInfo.MultiKeyDisabledTime[i]
-				}
-				if channel.ChannelInfo.MultiKeyDisabledReason != nil {
-					reason = channel.ChannelInfo.MultiKeyDisabledReason[i]
-				}
-			}
-
-			// Create key preview (first 10 chars)
-			keyPreview := key
-			if len(key) > 10 {
-				keyPreview = key[:10] + "..."
-			}
-
-			allKeyStatusList = append(allKeyStatusList, KeyStatus{
-				Index:        i,
-				Status:       status,
-				DisabledTime: disabledTime,
-				Reason:       reason,
-				KeyPreview:   keyPreview,
-			})
+		stableKeys, filteredTotal, err := model.GetChannelKeys(channel.Id, request.Status, (page-1)*pageSize, pageSize)
+		if err != nil {
+			common.ApiError(c, err)
+			return
 		}
-
-		// Apply status filter if specified
-		var filteredKeyStatusList []KeyStatus
-		if request.Status != nil {
-			for _, keyStatus := range allKeyStatusList {
-				if keyStatus.Status == *request.Status {
-					filteredKeyStatusList = append(filteredKeyStatusList, keyStatus)
-				}
-			}
-		} else {
-			filteredKeyStatusList = allKeyStatusList
-		}
-
-		// Calculate pagination based on filtered results
-		filteredTotal := len(filteredKeyStatusList)
-		totalPages := (filteredTotal + pageSize - 1) / pageSize
+		totalPages := (int(filteredTotal) + pageSize - 1) / pageSize
 		if totalPages == 0 {
 			totalPages = 1
 		}
-		if page > totalPages {
-			page = totalPages
+		keyStatusList := make([]KeyStatus, 0, len(stableKeys))
+		for _, key := range stableKeys {
+			keyStatusList = append(keyStatusList, KeyStatus{
+				Id:             key.Id,
+				Index:          key.Position,
+				Status:         key.Status,
+				DisabledTime:   key.DisabledAt,
+				Reason:         key.DisabledReason,
+				KeyPreview:     key.Preview(),
+				RpmLimit:       key.RpmLimit,
+				EffectiveRpm:   key.EffectiveRpmLimit(channel),
+				ModelRpmLimits: key.ModelRpmLimits,
+				QuotaLimit:     key.QuotaLimit,
+				EffectiveQuota: key.EffectiveQuotaLimit(channel),
+				QuotaUsed:      key.QuotaUsed,
+				QuotaReserved:  key.QuotaReserved,
+				LifetimeQuota:  key.LifetimeQuota,
+				ExhaustedTime:  key.ExhaustedAt,
+			})
 		}
 
-		// Calculate range for current page
-		start := (page - 1) * pageSize
-		end := start + pageSize
-		if end > filteredTotal {
-			end = filteredTotal
-		}
-
-		// Get the page data
-		var pageKeyStatusList []KeyStatus
-		if start < filteredTotal {
-			pageKeyStatusList = filteredKeyStatusList[start:end]
-		}
-
+		var enabledCount, manualDisabledCount, autoDisabledCount int64
+		model.DB.Model(&model.ChannelKey{}).Where("channel_id = ? AND status = ?", channel.Id, model.ChannelKeyStatusEnabled).Count(&enabledCount)
+		model.DB.Model(&model.ChannelKey{}).Where("channel_id = ? AND status = ?", channel.Id, model.ChannelKeyStatusManuallyDisabled).Count(&manualDisabledCount)
+		// Quota-exhausted keys are represented by ArchivedCount and require an
+		// explicit quota reset. Do not merge them into AutoDisabledCount,
+		// otherwise "Enable All" appears even though it cannot restore them.
+		model.DB.Model(&model.ChannelKey{}).Where("channel_id = ? AND status = ?", channel.Id, model.ChannelKeyStatusErrorDisabled).Count(&autoDisabledCount)
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"message": "",
 			"data": MultiKeyStatusResponse{
-				Keys:                pageKeyStatusList,
-				Total:               filteredTotal, // Total of filtered results
+				Keys:                keyStatusList,
+				Total:               int(filteredTotal),
 				Page:                page,
 				PageSize:            pageSize,
 				TotalPages:          totalPages,
-				EnabledCount:        enabledCount,        // Overall statistics
-				ManualDisabledCount: manualDisabledCount, // Overall statistics
-				AutoDisabledCount:   autoDisabledCount,   // Overall statistics
+				EnabledCount:        int(enabledCount),
+				ManualDisabledCount: int(manualDisabledCount),
+				AutoDisabledCount:   int(autoDisabledCount),
+			},
+		})
+		return
+
+	case "get_key_archives":
+		page := request.Page
+		pageSize := request.PageSize
+		if page <= 0 {
+			page = 1
+		}
+		if pageSize <= 0 || pageSize > 200 {
+			pageSize = 50
+		}
+		archives, total, err := model.GetChannelKeyArchives(channel.Id, (page-1)*pageSize, pageSize)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		totalPages := (int(total) + pageSize - 1) / pageSize
+		if totalPages == 0 {
+			totalPages = 1
+		}
+		keys := make([]ArchivedKeyStatus, 0, len(archives))
+		for _, archive := range archives {
+			keys = append(keys, ArchivedKeyStatus{
+				ArchiveId:      archive.Id,
+				OriginalKeyId:  archive.OriginalKeyId,
+				Index:          archive.Position,
+				KeyPreview:     archive.Preview(),
+				RpmLimit:       archive.RpmLimit,
+				ModelRpmLimits: archive.ModelRpmLimits,
+				QuotaLimit:     archive.QuotaLimit,
+				EffectiveQuota: archive.EffectiveQuotaLimit,
+				QuotaUsed:      archive.QuotaUsed,
+				LifetimeQuota:  archive.LifetimeQuota,
+				Reason:         archive.Reason,
+				ExhaustedTime:  archive.ExhaustedAt,
+				ArchivedTime:   archive.ArchivedAt,
+			})
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+			"data": ChannelKeyArchiveResponse{
+				Keys:       keys,
+				Total:      int(total),
+				Page:       page,
+				PageSize:   pageSize,
+				TotalPages: totalPages,
 			},
 		})
 		return
@@ -1682,6 +1752,15 @@ func ManageMultiKeys(c *gin.Context) {
 
 		err = channel.Update()
 		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		stableKey, err := model.GetChannelKeyByPosition(channel.Id, keyIndex)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if err = model.SetChannelKeyOperationalStatus(channel.Id, stableKey.Id, model.ChannelKeyStatusManuallyDisabled, "manually disabled"); err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -1727,6 +1806,15 @@ func ManageMultiKeys(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+		stableKey, err := model.GetChannelKeyByPosition(channel.Id, keyIndex)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if err = model.SetChannelKeyOperationalStatus(channel.Id, stableKey.Id, model.ChannelKeyStatusEnabled, ""); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 
 		model.InitChannelCache()
 		c.JSON(http.StatusOK, gin.H{
@@ -1748,6 +1836,10 @@ func ManageMultiKeys(c *gin.Context) {
 
 		err = channel.Update()
 		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if err = model.SetAllChannelKeysOperationalStatus(channel.Id, model.ChannelKeyStatusEnabled, ""); err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -1795,6 +1887,10 @@ func ManageMultiKeys(c *gin.Context) {
 
 		err = channel.Update()
 		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if err = model.SetAllChannelKeysOperationalStatus(channel.Id, model.ChannelKeyStatusManuallyDisabled, "manually disabled"); err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -1953,6 +2049,60 @@ func ManageMultiKeys(c *gin.Context) {
 			"message": fmt.Sprintf("已删除 %d 个自动禁用的密钥", deletedCount),
 			"data":    deletedCount,
 		})
+		return
+
+	case "update_key_limits":
+		if request.KeyId == nil {
+			common.ApiError(c, errors.New("未指定密钥 ID"))
+			return
+		}
+		if err = model.UpdateChannelKeyLimits(
+			channel.Id,
+			*request.KeyId,
+			request.RpmLimit,
+			request.QuotaLimit,
+			request.ModelRpmLimits,
+		); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		recordManageAudit(c, "channel.key_limits_update", map[string]interface{}{
+			"id":     channel.Id,
+			"key_id": *request.KeyId,
+		})
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "密钥限制已更新"})
+		return
+
+	case "reset_key_quota":
+		if request.KeyId == nil {
+			common.ApiError(c, errors.New("未指定密钥 ID"))
+			return
+		}
+		if err = model.ResetChannelKeyQuota(channel.Id, *request.KeyId); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		recordManageAudit(c, "channel.key_quota_reset", map[string]interface{}{
+			"id":     channel.Id,
+			"key_id": *request.KeyId,
+		})
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "密钥额度已重置"})
+		return
+
+	case "restore_archived_key":
+		if request.ArchiveId == nil {
+			common.ApiError(c, errors.New("未指定归档记录 ID"))
+			return
+		}
+		if err = model.RestoreChannelKeyArchive(channel.Id, *request.ArchiveId); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		recordManageAudit(c, "channel.key_archive_restore", map[string]interface{}{
+			"id":         channel.Id,
+			"archive_id": *request.ArchiveId,
+		})
+		c.JSON(http.StatusOK, gin.H{"success": true, "message": "密钥已从耗尽密钥库恢复"})
 		return
 
 	default:

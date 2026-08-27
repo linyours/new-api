@@ -51,6 +51,8 @@ import {
   enableAllMultiKeys,
   disableAllMultiKeys,
   deleteDisabledMultiKeys,
+  resetChannelKeyQuota,
+  updateChannelKeyLimits,
 } from '../../api'
 import { MULTI_KEY_FILTER_OPTIONS } from '../../constants'
 import {
@@ -60,8 +62,10 @@ import {
   getMultiKeyConfirmMessage,
   isDestructiveAction,
 } from '../../lib'
+import { formatChannelKeyQuotaUSD } from '../../lib/key-quota-usd'
 import type { KeyStatus, MultiKeyConfirmAction } from '../../types'
 import { useChannels } from '../channels-provider'
+import { ChannelKeyLimitsDialog } from './channel-key-limits-dialog'
 import { StatisticsCard } from './multi-key-statistics-card'
 import { MultiKeyTableRowActions } from './multi-key-table-row-actions'
 
@@ -78,6 +82,11 @@ export function MultiKeyManageDialog({
   const { currentRow } = useChannels()
   const queryClient = useQueryClient()
   const currentUser = useAuthStore((s) => s.auth.user)
+  const canConfigure = hasPermission(
+    currentUser,
+    ADMIN_PERMISSION_RESOURCES.CHANNEL,
+    ADMIN_PERMISSION_ACTIONS.WRITE
+  )
   const canEditSensitive = hasPermission(
     currentUser,
     ADMIN_PERMISSION_RESOURCES.CHANNEL,
@@ -100,6 +109,8 @@ export function MultiKeyManageDialog({
   const [confirmAction, setConfirmAction] =
     useState<MultiKeyConfirmAction | null>(null)
   const [isPerformingAction, setIsPerformingAction] = useState(false)
+  const [editingKey, setEditingKey] = useState<KeyStatus | null>(null)
+  const [isSavingLimits, setIsSavingLimits] = useState(false)
 
   // Reset and load data when dialog opens
   useEffect(() => {
@@ -149,7 +160,7 @@ export function MultiKeyManageDialog({
   }
 
   const handleStatusFilterChange = (value: string) => {
-    const newFilter = value === 'all' ? null : parseInt(value)
+    const newFilter = value === 'all' ? null : Number.parseInt(value)
     setStatusFilter(newFilter)
     setCurrentPage(1)
     loadKeyStatus(1, pageSize, newFilter)
@@ -173,7 +184,7 @@ export function MultiKeyManageDialog({
 
     setIsPerformingAction(true)
     try {
-      const { type, keyIndex } = confirmAction
+      const { type, keyIndex, keyId } = confirmAction
       let response
 
       // Execute the appropriate action
@@ -189,6 +200,8 @@ export function MultiKeyManageDialog({
         response = await disableAllMultiKeys(currentRow.id)
       } else if (type === 'delete-disabled') {
         response = await deleteDisabledMultiKeys(currentRow.id)
+      } else if (type === 'reset-quota' && keyId !== undefined) {
+        response = await resetChannelKeyQuota(currentRow.id, keyId)
       }
 
       if (response?.success) {
@@ -213,6 +226,37 @@ export function MultiKeyManageDialog({
     } finally {
       setIsPerformingAction(false)
       setConfirmAction(null)
+    }
+  }
+
+  const saveKeyLimits = async (
+    rpmLimit: number | null,
+    quotaLimit: number | null,
+    modelRpmLimits: Record<string, number>
+  ) => {
+    if (!currentRow || !editingKey) return
+    setIsSavingLimits(true)
+    try {
+      const response = await updateChannelKeyLimits(
+        currentRow.id,
+        editingKey.id,
+        rpmLimit,
+        quotaLimit,
+        modelRpmLimits
+      )
+      if (!response.success) {
+        toast.error(response.message || t('Operation failed'))
+        return
+      }
+      toast.success(response.message || t('Operation successful'))
+      setEditingKey(null)
+      await loadKeyStatus(currentPage, pageSize)
+    } catch (error: unknown) {
+      toast.error(
+        error instanceof Error ? error.message : t('Operation failed')
+      )
+    } finally {
+      setIsSavingLimits(false)
     }
   }
 
@@ -294,12 +338,10 @@ export function MultiKeyManageDialog({
           {/* Toolbar */}
           <div className='flex shrink-0 items-center justify-between'>
             <Select
-              items={[
-                ...MULTI_KEY_FILTER_OPTIONS.map((option) => ({
-                  value: option.value,
-                  label: t(option.label),
-                })),
-              ]}
+              items={MULTI_KEY_FILTER_OPTIONS.map((option) => ({
+                value: option.value,
+                label: t(option.label),
+              }))}
               value={statusFilter === null ? 'all' : statusFilter.toString()}
               onValueChange={(v) => v !== null && handleStatusFilterChange(v)}
             >
@@ -378,20 +420,22 @@ export function MultiKeyManageDialog({
 
           {/* Table */}
           <div className='min-h-0 flex-1 overflow-auto rounded-md border'>
-            {isLoading ? (
+            {isLoading && (
               <div className='flex items-center justify-center py-12'>
                 <Loader2 className='text-muted-foreground h-8 w-8 animate-spin' />
               </div>
-            ) : keys.length === 0 ? (
+            )}
+            {!isLoading && keys.length === 0 && (
               <div className='text-muted-foreground py-12 text-center'>
                 {t('No keys found')}
               </div>
-            ) : (
+            )}
+            {!isLoading && keys.length > 0 && (
               <StaticDataTable
                 className='rounded-none border-0'
-                tableClassName='min-w-[800px]'
+                tableClassName='min-w-[1100px]'
                 data={keys}
-                getRowKey={(key) => key.index}
+                getRowKey={(key) => key.id}
                 columns={[
                   {
                     id: 'index',
@@ -405,6 +449,43 @@ export function MultiKeyManageDialog({
                     header: t('Status'),
                     className: 'w-32',
                     cell: (key) => renderStatusBadge(key.status),
+                  },
+                  {
+                    id: 'rpm',
+                    header: t('RPM limit'),
+                    className: 'w-28',
+                    cellClassName: 'font-mono text-sm',
+                    cell: (key) => {
+                      const overrideCount = Object.keys(
+                        key.model_rpm_limits || {}
+                      ).length
+                      return (
+                        <div className='flex flex-col'>
+                          <span>
+                            {key.effective_rpm > 0
+                              ? key.effective_rpm
+                              : t('Unlimited')}
+                          </span>
+                          {overrideCount > 0 && (
+                            <span className='text-muted-foreground text-xs'>
+                              {t('{{count}} model overrides', {
+                                count: overrideCount,
+                              })}
+                            </span>
+                          )}
+                        </div>
+                      )
+                    },
+                  },
+                  {
+                    id: 'quota',
+                    header: t('USD usage'),
+                    className: 'w-48',
+                    cellClassName: 'font-mono text-sm',
+                    cell: (key) =>
+                      key.effective_quota > 0
+                        ? `${formatChannelKeyQuotaUSD(key.quota_used)} / ${formatChannelKeyQuotaUSD(key.effective_quota)}`
+                        : `${formatChannelKeyQuotaUSD(key.quota_used)} / ${t('Unlimited')}`,
                   },
                   {
                     id: 'reason',
@@ -426,10 +507,20 @@ export function MultiKeyManageDialog({
                     className: 'text-right',
                     cell: (key) => (
                       <MultiKeyTableRowActions
+                        keyId={key.id}
                         keyIndex={key.index}
                         status={key.status}
+                        canConfigure={canConfigure}
                         canDelete={canEditSensitive}
                         onAction={setConfirmAction}
+                        onConfigure={(keyId) => {
+                          setEditingKey(
+                            keys.find((item) => item.id === keyId) || null
+                          )
+                        }}
+                        onResetQuota={(keyId) =>
+                          setConfirmAction({ type: 'reset-quota', keyId })
+                        }
                       />
                     ),
                   },
@@ -479,6 +570,23 @@ export function MultiKeyManageDialog({
         destructive={isDestructiveAction(confirmAction)}
         isLoading={isPerformingAction}
         handleConfirm={performAction}
+      />
+      <ChannelKeyLimitsDialog
+        open={editingKey !== null}
+        keyStatus={editingKey}
+        saving={isSavingLimits}
+        models={[
+          ...new Set(
+            currentRow?.models
+              ?.split(',')
+              .map((model) => model.trim())
+              .filter(Boolean) || []
+          ),
+        ]}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setEditingKey(null)
+        }}
+        onSave={saveKeyLimits}
       />
     </>
   )

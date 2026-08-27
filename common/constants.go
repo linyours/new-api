@@ -159,7 +159,10 @@ var SyncFrequency int // unit is second
 var BatchUpdateEnabled = false
 var BatchUpdateInterval int
 
-var RelayTimeout int // unit is second
+// RelayTimeout is the process-start value of RELAY_TIMEOUT (seconds).
+// Runtime timeout is general_setting.relay_timeout_seconds; this env value is
+// only used to seed that setting the first time it is missing from the database.
+var RelayTimeout int
 
 var RelayIdleConnTimeout int // unit is second
 var RelayMaxIdleConns int

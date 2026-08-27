@@ -34,6 +34,35 @@ func CreateLogCleanupSystemTask(c *gin.Context) {
 	})
 }
 
+func CreateErrorLogTruncateSystemTask(c *gin.Context) {
+	task, err := service.StartErrorLogTruncateTask()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    task.ToResponse(),
+	})
+}
+
+func CreateErrorLogRetainSystemTask(c *gin.Context) {
+	retainDays, _ := strconv.Atoi(c.Query("retain_days"))
+	task, err := service.StartErrorLogRetainTask(retainDays)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    task.ToResponse(),
+	})
+}
+
 func GetCurrentSystemTask(c *gin.Context) {
 	taskType := c.Query("type")
 	if taskType == "" {

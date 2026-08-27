@@ -260,6 +260,10 @@ func migrateDB() error {
 
 	err := DB.AutoMigrate(
 		&Channel{},
+		&ChannelKey{},
+		&ChannelKeyQuotaReservation{},
+		&ChannelKeyEvent{},
+		&ChannelKeyArchive{},
 		&Token{},
 		&User{},
 		&UserSession{},
@@ -270,6 +274,7 @@ func migrateDB() error {
 		&Redemption{},
 		&Ability{},
 		&Log{},
+		&ErrorLog{},
 		&Midjourney{},
 		&TopUp{},
 		&QuotaData{},
@@ -294,6 +299,9 @@ func migrateDB() error {
 		&AuthzRole{},
 	)
 	if err != nil {
+		return err
+	}
+	if err := MigrateLegacyChannelKeys(); err != nil {
 		return err
 	}
 	if err := InitializeUserAuthVersions(); err != nil {
@@ -323,6 +331,10 @@ func migrateDBFast() error {
 		name  string
 	}{
 		{&Channel{}, "Channel"},
+		{&ChannelKey{}, "ChannelKey"},
+		{&ChannelKeyQuotaReservation{}, "ChannelKeyQuotaReservation"},
+		{&ChannelKeyEvent{}, "ChannelKeyEvent"},
+		{&ChannelKeyArchive{}, "ChannelKeyArchive"},
 		{&Token{}, "Token"},
 		{&User{}, "User"},
 		{&UserSession{}, "UserSession"},
@@ -377,6 +389,9 @@ func migrateDBFast() error {
 			return err
 		}
 	}
+	if err := MigrateLegacyChannelKeys(); err != nil {
+		return err
+	}
 	if err := InitializeUserAuthVersions(); err != nil {
 		return err
 	}
@@ -400,7 +415,7 @@ func migrateLOGDB() error {
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
 		return migrateClickHouseLogDB()
 	}
-	return LOG_DB.AutoMigrate(&Log{})
+	return LOG_DB.AutoMigrate(&Log{}, &ErrorLog{})
 }
 
 func migrateClickHouseLogDB() error {
@@ -408,7 +423,14 @@ func migrateClickHouseLogDB() error {
 	if err := LOG_DB.Exec(clickHouseLogCreateTableSQL(ttlDays)).Error; err != nil {
 		return err
 	}
-	return syncClickHouseLogTTL(ttlDays)
+	errorTTLDays := clickHouseErrorLogTTLDays()
+	if err := LOG_DB.Exec(clickHouseErrorLogCreateTableSQL(errorTTLDays)).Error; err != nil {
+		return err
+	}
+	if err := syncClickHouseLogTTL(ttlDays); err != nil {
+		return err
+	}
+	return syncClickHouseErrorLogTTL(errorTTLDays)
 }
 
 func clickHouseLogTTLDays() int {
@@ -463,6 +485,35 @@ PARTITION BY toYYYYMM(toDateTime(created_at))
 ORDER BY (created_at, request_id)%s`, clickHouseLogTTLClause(ttlDays))
 }
 
+func clickHouseErrorLogCreateTableSQL(ttlDays int) string {
+	return fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS error_logs (
+	id Int64 DEFAULT 0,
+	user_id Int32 DEFAULT 0,
+	created_at Int64 DEFAULT 0,
+	type Int32 DEFAULT 0,
+	content String DEFAULT '',
+	username String DEFAULT '',
+	token_name String DEFAULT '',
+	model_name String DEFAULT '',
+	quota Int32 DEFAULT 0,
+	prompt_tokens Int32 DEFAULT 0,
+	completion_tokens Int32 DEFAULT 0,
+	use_time Int32 DEFAULT 0,
+	is_stream UInt8 DEFAULT 0,
+	channel_id Int32 DEFAULT 0,
+	token_id Int32 DEFAULT 0,
+	`+"`group`"+` String DEFAULT '',
+	ip String DEFAULT '',
+	request_id String DEFAULT '',
+	upstream_request_id String DEFAULT '',
+	other String DEFAULT ''
+)
+ENGINE = MergeTree()
+PARTITION BY toYYYYMMDD(toDateTime(created_at))
+ORDER BY (created_at, request_id)%s`, clickHouseLogTTLClause(ttlDays))
+}
+
 func syncClickHouseLogTTL(ttlDays int) error {
 	expression := clickHouseLogTTLExpression(ttlDays)
 	if expression != "" {
@@ -477,6 +528,30 @@ func syncClickHouseLogTTL(ttlDays int) error {
 		return nil
 	}
 	return LOG_DB.Exec("ALTER TABLE logs REMOVE TTL").Error
+}
+
+func syncClickHouseErrorLogTTL(ttlDays int) error {
+	expression := clickHouseLogTTLExpression(ttlDays)
+	if expression != "" {
+		return LOG_DB.Exec("ALTER TABLE error_logs MODIFY TTL " + expression).Error
+	}
+
+	hasTTL, err := clickHouseErrorLogTableHasTTL()
+	if err != nil {
+		return err
+	}
+	if !hasTTL {
+		return nil
+	}
+	return LOG_DB.Exec("ALTER TABLE error_logs REMOVE TTL").Error
+}
+
+func clickHouseErrorLogTableHasTTL() (bool, error) {
+	var createTableSQL string
+	if err := LOG_DB.Raw("SHOW CREATE TABLE error_logs").Scan(&createTableSQL).Error; err != nil {
+		return false, err
+	}
+	return clickHouseCreateTableHasTTL(createTableSQL), nil
 }
 
 func clickHouseLogTableHasTTL() (bool, error) {
