@@ -30,6 +30,8 @@ type Channel struct {
 	Name               string  `json:"name" gorm:"index"`
 	Weight             *uint   `json:"weight" gorm:"default:0"`
 	CreatedTime        int64   `json:"created_time" gorm:"bigint"`
+	CreatedBy          int     `json:"created_by" gorm:"index;default:0"` // creator user id; 0 = unknown/legacy
+	UpdatedBy          int     `json:"updated_by" gorm:"index;default:0"` // last editor user id; 0 = unknown/legacy
 	TestTime           int64   `json:"test_time" gorm:"bigint"`
 	ResponseTime       int     `json:"response_time"` // in milliseconds
 	BaseURL            *string `json:"base_url" gorm:"column:base_url;default:''"`

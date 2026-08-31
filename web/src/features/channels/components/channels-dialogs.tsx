@@ -17,13 +17,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useChannels } from './channels-provider'
+import { ApplyChannelTemplateDialog } from './dialogs/apply-channel-template-dialog'
 import { BalanceQueryDialog } from './dialogs/balance-query-dialog'
 import { ChannelTestDialog } from './dialogs/channel-test-dialog'
 import { CopyChannelDialog } from './dialogs/copy-channel-dialog'
 import { EditTagDialog } from './dialogs/edit-tag-dialog'
 import { FetchModelsDialog } from './dialogs/fetch-models-dialog'
+import { ManageChannelTemplatesDialog } from './dialogs/manage-channel-templates-dialog'
 import { MultiKeyManageDialog } from './dialogs/multi-key-manage-dialog'
 import { OllamaModelsDialog } from './dialogs/ollama-models-dialog'
+import { SaveChannelTemplateDialog } from './dialogs/save-channel-template-dialog'
 import { SingleKeyLimitsDialog } from './dialogs/single-key-limits-dialog'
 import { TagBatchEditDialog } from './dialogs/tag-batch-edit-dialog'
 import { UpstreamUpdateDialog } from './dialogs/upstream-update-dialog'
@@ -68,6 +71,21 @@ export function ChannelsDialogs() {
       {/* Copy Channel Dialog */}
       <CopyChannelDialog
         open={open === 'copy-channel'}
+        onOpenChange={(v) => !v && setOpen(null)}
+      />
+
+      <SaveChannelTemplateDialog
+        open={open === 'save-as-template'}
+        onOpenChange={(v) => !v && setOpen(null)}
+      />
+
+      <ApplyChannelTemplateDialog
+        open={open === 'apply-template'}
+        onOpenChange={(v) => !v && setOpen(null)}
+      />
+
+      <ManageChannelTemplatesDialog
+        open={open === 'manage-templates'}
         onOpenChange={(v) => !v && setOpen(null)}
       />
 

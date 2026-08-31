@@ -33,6 +33,7 @@ import {
   Trash2,
   RefreshCw,
   Loader2,
+  Files,
 } from 'lucide-react'
 import { useContext, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -57,6 +58,7 @@ import {
   ADMIN_PERMISSION_RESOURCES,
   hasPermission,
 } from '@/lib/admin-permissions'
+import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { MODEL_FETCHABLE_TYPES } from '../constants'
@@ -95,11 +97,7 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
     ADMIN_PERMISSION_RESOURCES.CHANNEL,
     ADMIN_PERMISSION_ACTIONS.SENSITIVE_WRITE
   )
-  const canConfigureLimits = hasPermission(
-    currentUser,
-    ADMIN_PERMISSION_RESOURCES.CHANNEL,
-    ADMIN_PERMISSION_ACTIONS.WRITE
-  )
+  const canConfigureLimits = currentUser?.role === ROLE.SUPER_ADMIN
 
   const handleEdit = () => {
     setCurrentRow(channel)
@@ -356,6 +354,19 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
               <Copy size={16} />
             </DropdownMenuShortcut>
           </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={!canConfigureLimits}
+            onClick={() => {
+              if (!canConfigureLimits) return
+              setCurrentRow(channel)
+              setOpen('save-as-template')
+            }}
+          >
+            {t('Save as Template')}
+            <DropdownMenuShortcut>
+              <Files size={16} />
+            </DropdownMenuShortcut>
+          </DropdownMenuItem>
           {!canEditSensitive && (
             <DropdownMenuItem disabled className='text-xs normal-case'>
               {t('No permission to perform this action')}
@@ -371,11 +382,8 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
               </DropdownMenuShortcut>
             </DropdownMenuItem>
           )}
-          {!isMultiKey && (
-            <DropdownMenuItem
-              disabled={!canConfigureLimits}
-              onClick={canConfigureLimits ? handleConfigureKeyLimits : undefined}
-            >
+          {!isMultiKey && canConfigureLimits && (
+            <DropdownMenuItem onClick={handleConfigureKeyLimits}>
               {t('Configure key limits')}
               <DropdownMenuShortcut>
                 <Gauge size={16} />

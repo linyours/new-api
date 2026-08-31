@@ -29,6 +29,7 @@ import {
   SortAsc,
   RefreshCw,
   ArrowUpFromLine,
+  LayoutTemplate,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -88,6 +89,11 @@ export function ChannelsPrimaryButtons() {
     currentUser,
     ADMIN_PERMISSION_RESOURCES.CHANNEL,
     ADMIN_PERMISSION_ACTIONS.SENSITIVE_WRITE
+  )
+  const canWrite = hasPermission(
+    currentUser,
+    ADMIN_PERMISSION_RESOURCES.CHANNEL,
+    ADMIN_PERMISSION_ACTIONS.WRITE
   )
 
   const handleTagModeToggle = (checked: boolean) => {
@@ -162,6 +168,28 @@ export function ChannelsPrimaryButtons() {
               <Plus className='h-4 w-4' />
               <span className='max-sm:hidden'>{t('Create Channel')}</span>
               <span className='sm:hidden'>{t('Create')}</span>
+            </Button>
+          </TooltipTrigger>
+          {!canEditSensitive && (
+            <TooltipContent>
+              {t('No permission to perform this action')}
+            </TooltipContent>
+          )}
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger render={<span className='inline-flex' />}>
+            <Button
+              variant='outline'
+              onClick={() => {
+                if (!canEditSensitive) return
+                setOpen('apply-template')
+              }}
+              size='sm'
+              disabled={!canEditSensitive}
+            >
+              <LayoutTemplate className='h-4 w-4' />
+              <span className='max-sm:hidden'>{t('From Template')}</span>
             </Button>
           </TooltipTrigger>
           {!canEditSensitive && (
@@ -252,6 +280,19 @@ export function ChannelsPrimaryButtons() {
             </DropdownMenuItem>
 
             <DropdownMenuSeparator />
+
+            <DropdownMenuItem
+              disabled={!canWrite}
+              onClick={() => {
+                if (!canWrite) return
+                setOpen('manage-templates')
+              }}
+            >
+              {t('Channel Templates')}
+              <DropdownMenuShortcut>
+                <LayoutTemplate className='h-4 w-4' />
+              </DropdownMenuShortcut>
+            </DropdownMenuItem>
 
             <DropdownMenuItem
               onSelect={(e) => {

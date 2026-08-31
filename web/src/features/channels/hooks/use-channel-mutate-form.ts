@@ -25,6 +25,7 @@ import {
   ADMIN_PERMISSION_RESOURCES,
   hasPermission,
 } from '@/lib/admin-permissions'
+import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { createChannel, updateChannel } from '../api'
@@ -53,6 +54,11 @@ const SENSITIVE_UPDATE_FIELDS = [
   'setting',
   'settings',
   'other',
+] satisfies (keyof Channel)[]
+
+const SUPER_ADMIN_ONLY_LIMIT_FIELDS = [
+  'key_rpm_limit',
+  'key_quota_limit',
 ] satisfies (keyof Channel)[]
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -88,6 +94,7 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
     ADMIN_PERMISSION_RESOURCES.CHANNEL,
     ADMIN_PERMISSION_ACTIONS.SENSITIVE_WRITE
   )
+  const canEditKeyLimits = currentUser?.role === ROLE.SUPER_ADMIN
 
   return useMutation({
     mutationFn: async (data: ChannelFormValues): Promise<string> => {
@@ -101,6 +108,11 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
         }
         if (!canEditSensitive) {
           for (const field of SENSITIVE_UPDATE_FIELDS) {
+            delete payload[field]
+          }
+        }
+        if (!canEditKeyLimits) {
+          for (const field of SUPER_ADMIN_ONLY_LIMIT_FIELDS) {
             delete payload[field]
           }
         }
@@ -126,6 +138,11 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
       }
 
       const payload = transformFormDataToCreatePayload(data)
+      if (!canEditKeyLimits) {
+        for (const field of SUPER_ADMIN_ONLY_LIMIT_FIELDS) {
+          delete payload.channel[field]
+        }
+      }
       const response = await createChannel(payload)
       if (!response.success) {
         throw new Error(response.message || t(ERROR_MESSAGES.CREATE_FAILED))

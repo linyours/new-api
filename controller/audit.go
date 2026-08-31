@@ -44,6 +44,10 @@ var auditContentTemplates = map[string]string{
 	"channel.multi_key_manage":   "Multi-key management ${action} on channel (ID: ${id})",
 	"channel.upstream_apply":     "Applied upstream model changes to channel (ID: ${id})",
 	"channel.upstream_apply_all": "Applied upstream model changes to ${count} channels",
+	"channel.template.create":    "Created channel template ${name} (ID: ${id})",
+	"channel.template.update":    "Updated channel template ${name} (ID: ${id})",
+	"channel.template.delete":    "Deleted channel template ${name} (ID: ${id})",
+	"channel.template.apply":     "Applied channel template ${name} and created ${count} channels",
 
 	"redemption.create": "Created ${count} redemption codes named ${name} (${quota} each)",
 

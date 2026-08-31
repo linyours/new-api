@@ -20,6 +20,7 @@ import {
   Activity,
   Archive,
   Box,
+  ChartColumn,
   CircleAlert,
   CreditCard,
   FileText,
@@ -132,9 +133,16 @@ export function useSidebarData(): SidebarData {
             icon: Radio,
           },
           {
+            title: t('Channel creator usage'),
+            url: '/channel-creator-usage',
+            icon: ChartColumn,
+            requiredRole: ROLE.SUPER_ADMIN,
+          },
+          {
             title: t('Exhausted key archive'),
             url: '/channel-key-archives',
             icon: Archive,
+            requiredRole: ROLE.SUPER_ADMIN,
           },
           {
             title: t('Models'),

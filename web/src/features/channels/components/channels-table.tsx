@@ -32,7 +32,6 @@ import {
   DISABLED_ROW_DESKTOP,
   DISABLED_ROW_MOBILE,
   DataTablePage,
-  useDebouncedColumnFilter,
   useDataTable,
 } from '@/components/data-table'
 import { Button } from '@/components/ui/button'
@@ -162,18 +161,30 @@ export function ChannelsTable() {
   )
   const groupFilter =
     (columnFilters.find((f) => f.id === 'group')?.value as string[]) || []
-  const {
-    value: modelFilter,
-    inputValue: modelFilterInput,
-    onChange: onModelFilterInputChange,
-    onCompositionStart: onModelFilterCompositionStart,
-    onCompositionEnd: onModelFilterCompositionEnd,
-    resetInput: resetModelFilterInput,
-  } = useDebouncedColumnFilter({
-    columnFilters,
-    columnId: 'model',
-    onColumnFiltersChange,
-  })
+  const modelFilter =
+    (columnFilters.find((f) => f.id === 'model')?.value as string) || ''
+  const [modelFilterInput, setModelFilterInput] = useState(modelFilter)
+
+  useEffect(() => {
+    setModelFilterInput(modelFilter)
+  }, [modelFilter])
+
+  const commitModelFilter = () => {
+    const nextModel = modelFilterInput.trim()
+    if (nextModel === modelFilter.trim()) {
+      return
+    }
+    handleColumnFiltersChange((previous) => {
+      const filters = previous.filter((filter) => filter.id !== 'model')
+      return nextModel
+        ? [...filters, { id: 'model', value: nextModel }]
+        : filters
+    })
+  }
+
+  const resetModelFilterInput = () => {
+    setModelFilterInput('')
+  }
 
   // Determine whether to use search or regular list API
   const shouldSearch = Boolean(globalFilter?.trim() || modelFilter.trim())
@@ -427,7 +438,9 @@ export function ChannelsTable() {
       applyHeaderSize
       toolbarProps={{
         searchPlaceholder: t('Filter by name, ID, or key...'),
-        searchDebounceMs: 500,
+        onSearch: commitModelFilter,
+        searchLoading: isFetching,
+        hasAdditionalFilters: Boolean(modelFilter.trim()),
         onReset: () => {
           resetModelFilterInput()
         },
@@ -435,9 +448,7 @@ export function ChannelsTable() {
           <Input
             placeholder={t('Filter by model...')}
             value={modelFilterInput}
-            onChange={onModelFilterInputChange}
-            onCompositionStart={onModelFilterCompositionStart}
-            onCompositionEnd={onModelFilterCompositionEnd}
+            onChange={(event) => setModelFilterInput(event.target.value)}
             className='w-full sm:w-[150px] lg:w-[180px]'
           />
         ),
@@ -466,6 +477,7 @@ export function ChannelsTable() {
             <TooltipTrigger
               render={
                 <Button
+                  type='button'
                   variant='ghost'
                   size='icon'
                   onClick={() => setSensitiveVisible(!sensitiveVisible)}

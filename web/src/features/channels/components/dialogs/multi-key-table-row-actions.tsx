@@ -51,21 +51,15 @@ export function MultiKeyTableRowActions(props: MultiKeyTableRowActionsProps) {
       </Button>
     )
   } else if (isQuotaExhausted) {
-    statusAction = (
+    statusAction = props.canConfigure ? (
       <Button
         variant='outline'
         size='sm'
         onClick={() => props.onResetQuota(props.keyId)}
-        disabled={!props.canConfigure}
-        title={
-          props.canConfigure
-            ? undefined
-            : t('No permission to perform this action')
-        }
       >
         {t('Reset quota')}
       </Button>
-    )
+    ) : null
   } else {
     statusAction = (
       <Button
@@ -82,19 +76,15 @@ export function MultiKeyTableRowActions(props: MultiKeyTableRowActionsProps) {
 
   return (
     <div className='flex justify-end gap-2'>
-      <Button
-        variant='outline'
-        size='sm'
-        onClick={() => props.onConfigure(props.keyId)}
-        disabled={!props.canConfigure}
-        title={
-          props.canConfigure
-            ? undefined
-            : t('No permission to perform this action')
-        }
-      >
-        {t('Limits')}
-      </Button>
+      {props.canConfigure ? (
+        <Button
+          variant='outline'
+          size='sm'
+          onClick={() => props.onConfigure(props.keyId)}
+        >
+          {t('Limits')}
+        </Button>
+      ) : null}
       {statusAction}
       <Button
         variant='destructive'

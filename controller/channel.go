@@ -633,7 +633,10 @@ func AddChannel(c *gin.Context) {
 		return
 	}
 
+	operatorId := c.GetInt("id")
 	addChannelRequest.Channel.CreatedTime = common.GetTimestamp()
+	addChannelRequest.Channel.CreatedBy = operatorId
+	addChannelRequest.Channel.UpdatedBy = operatorId
 	keys := make([]string, 0)
 	switch addChannelRequest.Mode {
 	case "multi_to_single":
@@ -1005,6 +1008,8 @@ func UpdateChannel(c *gin.Context) {
 
 	// Always copy the original ChannelInfo so that fields like IsMultiKey and MultiKeySize are retained.
 	channel.ChannelInfo = originChannel.ChannelInfo
+	channel.CreatedBy = originChannel.CreatedBy
+	channel.UpdatedBy = c.GetInt("id")
 
 	if channelHasSensitiveChanges(&channel, originChannel, requestData) &&
 		!authz.Can(c.GetInt("id"), c.GetInt("role"), authz.ChannelSensitiveWrite) {
@@ -1440,9 +1445,13 @@ func CopyChannel(c *gin.Context) {
 	}
 
 	// clone channel
+	// Keep CreatedBy from the source channel so copying cannot re-attribute
+	// lifetime usage / billing ownership to the operator who clicked copy.
 	clone := *origin // shallow copy is sufficient as we will overwrite primitives
 	clone.Id = 0     // let DB auto-generate
 	clone.CreatedTime = common.GetTimestamp()
+	clone.CreatedBy = origin.CreatedBy
+	clone.UpdatedBy = c.GetInt("id")
 	clone.Name = origin.Name + suffix
 	clone.TestTime = 0
 	clone.ResponseTime = 0

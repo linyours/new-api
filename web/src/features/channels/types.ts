@@ -44,6 +44,8 @@ export const channelSchema = z.object({
   name: z.string(),
   weight: z.number().nullish(),
   created_time: z.number(),
+  created_by: z.number().default(0),
+  updated_by: z.number().default(0),
   test_time: z.number(),
   response_time: z.number(), // in milliseconds
   base_url: z.string().nullish(),
@@ -405,4 +407,24 @@ export interface AddChannelRequest {
   multi_key_mode?: 'random' | 'polling'
   batch_add_set_key_prefix_2_name?: boolean
   channel: Partial<Channel>
+}
+
+export interface ChannelTemplate {
+  id: number
+  name: string
+  description?: string
+  channel_type: number
+  config: string
+  name_suffix_length: number
+  created_time: number
+  updated_time: number
+}
+
+export interface ApplyChannelTemplateResponse {
+  success: boolean
+  message?: string
+  data?: {
+    count: number
+    channels: Array<{ id: number; name: string }>
+  }
 }

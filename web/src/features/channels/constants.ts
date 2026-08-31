@@ -277,6 +277,10 @@ export const SUCCESS_MESSAGES = {
   BALANCE_QUERIED: 'Balance queried successfully',
   MODELS_FETCHED: 'Models fetched successfully',
   COPIED: 'Channel copied successfully',
+  TEMPLATE_SAVED: 'Channel template saved',
+  TEMPLATE_UPDATED: 'Channel template updated',
+  TEMPLATE_DELETED: 'Channel template deleted',
+  TEMPLATE_APPLIED: 'Created {{count}} channels from template',
   TAG_SET: 'Tag set successfully',
   BATCH_DELETED: 'Channels deleted successfully',
 } as const

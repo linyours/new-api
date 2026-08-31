@@ -38,6 +38,8 @@ import type {
   SearchChannelsParams,
   SearchChannelsResponse,
   TagOperationParams,
+  ChannelTemplate,
+  ApplyChannelTemplateResponse,
 } from './types'
 
 const channelActionConfig = (
@@ -672,5 +674,63 @@ export async function getPrefillGroups(
   data?: Array<{ id: number; name: string; items: string | string[] }>
 }> {
   const res = await api.get('/api/prefill_group', { params: { type } })
+  return res.data
+}
+
+export async function getChannelTemplates(): Promise<{
+  success: boolean
+  message?: string
+  data?: ChannelTemplate[]
+}> {
+  const res = await api.get('/api/channel/templates')
+  return res.data
+}
+
+export async function createChannelTemplateFromChannel(
+  channelId: number,
+  data: {
+    name: string
+    description?: string
+    name_suffix_length?: number
+  }
+): Promise<{ success: boolean; message?: string; data?: ChannelTemplate }> {
+  const res = await api.post(
+    `/api/channel/templates/from_channel/${channelId}`,
+    data,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function updateChannelTemplate(data: {
+  id: number
+  name?: string
+  description?: string
+  name_suffix_length?: number
+  source_channel_id?: number
+}): Promise<{ success: boolean; message?: string; data?: ChannelTemplate }> {
+  const res = await api.put('/api/channel/templates', data, channelActionConfig())
+  return res.data
+}
+
+export async function deleteChannelTemplate(
+  id: number
+): Promise<{ success: boolean; message?: string }> {
+  const res = await api.delete(
+    `/api/channel/templates/${id}`,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function applyChannelTemplate(
+  id: number,
+  data: { keys: string; name_suffix_length?: number }
+): Promise<ApplyChannelTemplateResponse> {
+  const res = await api.post(
+    `/api/channel/templates/${id}/apply`,
+    data,
+    channelActionConfig()
+  )
   return res.data
 }

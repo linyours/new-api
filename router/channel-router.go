@@ -35,6 +35,23 @@ func registerChannelRoutes(apiRouter *gin.RouterGroup) {
 		controller.GetGlobalChannelKeyArchiveSecret,
 	)
 
+	// Super-admin-only creator usage reports (register before "/:id").
+	channelRoute.GET("/creator_usage",
+		middleware.RootAuth(),
+		middleware.DisableCache(),
+		controller.GetChannelCreatorUsage,
+	)
+	channelRoute.GET("/creator_usage/:user_id/channels",
+		middleware.RootAuth(),
+		middleware.DisableCache(),
+		controller.GetChannelCreatorUsageChannels,
+	)
+	channelRoute.GET("/creator_usage/:user_id/export",
+		middleware.RootAuth(),
+		middleware.DisableCache(),
+		controller.ExportChannelCreatorUsage,
+	)
+
 	for _, route := range channelPermissionRoutes {
 		channelRoute.Handle(route.method, route.path,
 			middleware.RequirePermission(route.permission),
@@ -52,6 +69,12 @@ var channelPermissionRoutes = []permissionRoute{
 	{method: http.MethodGet, path: "/key_archives", permission: authz.ChannelRead, handler: controller.GetGlobalChannelKeyArchives},
 	{method: http.MethodPost, path: "/key_archives/:id/restore", permission: authz.ChannelWrite, handler: controller.RestoreGlobalChannelKeyArchive},
 	{method: http.MethodDelete, path: "/key_archives/:id", permission: authz.ChannelSensitiveWrite, handler: controller.DeleteGlobalChannelKeyArchive},
+	{method: http.MethodGet, path: "/templates", permission: authz.ChannelRead, handler: controller.GetChannelTemplates},
+	{method: http.MethodGet, path: "/templates/:id", permission: authz.ChannelRead, handler: controller.GetChannelTemplate},
+	{method: http.MethodPost, path: "/templates/from_channel/:id", permission: authz.ChannelWrite, handler: controller.CreateChannelTemplateFromChannel},
+	{method: http.MethodPost, path: "/templates/:id/apply", permission: authz.ChannelSensitiveWrite, handler: controller.ApplyChannelTemplate},
+	{method: http.MethodPut, path: "/templates", permission: authz.ChannelWrite, handler: controller.UpdateChannelTemplate},
+	{method: http.MethodDelete, path: "/templates/:id", permission: authz.ChannelWrite, handler: controller.DeleteChannelTemplate},
 	{method: http.MethodGet, path: "/:id", permission: authz.ChannelRead, handler: controller.GetChannel},
 	{method: http.MethodGet, path: "/test", permission: authz.ChannelOperate, handler: controller.TestAllChannels},
 	{method: http.MethodGet, path: "/test/:id", permission: authz.ChannelOperate, handler: controller.TestChannel},

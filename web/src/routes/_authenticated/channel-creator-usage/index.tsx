@@ -8,16 +8,16 @@ License, or (at your option) any later version.
 */
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
-import { ChannelKeyArchives } from '@/features/channel-key-archives'
+import { ChannelCreatorUsage } from '@/features/channel-creator-usage'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
-export const Route = createFileRoute('/_authenticated/channel-key-archives/')({
+export const Route = createFileRoute('/_authenticated/channel-creator-usage/')({
   beforeLoad: () => {
     const { auth } = useAuthStore.getState()
     if (auth.user?.role !== ROLE.SUPER_ADMIN) {
       throw redirect({ to: '/403' })
     }
   },
-  component: ChannelKeyArchives,
+  component: ChannelCreatorUsage,
 })

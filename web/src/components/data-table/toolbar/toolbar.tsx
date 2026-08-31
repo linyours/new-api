@@ -159,6 +159,8 @@ export function DataTableToolbar<TData>(props: DataTableToolbarProps<TData>) {
   const filters = props.filters ?? []
   const hasExpandable = props.expandable != null
   const hasSearch = props.onSearch != null
+  // Explicit Search button = form mode: keep draft local until Search/Enter.
+  const isFormMode = hasSearch
 
   const isFiltered =
     props.table.getState().columnFilters.length > 0 ||
@@ -199,6 +201,7 @@ export function DataTableToolbar<TData>(props: DataTableToolbarProps<TData>) {
 
   React.useEffect(() => {
     if (
+      isFormMode ||
       searchDebounceMs <= 0 ||
       isSearchComposing ||
       debouncedSearchValue !== searchValue
@@ -210,12 +213,16 @@ export function DataTableToolbar<TData>(props: DataTableToolbarProps<TData>) {
   }, [
     commitSearchValue,
     debouncedSearchValue,
+    isFormMode,
     isSearchComposing,
     searchDebounceMs,
     searchValue,
   ])
 
   const queueSearchValue = (value: string) => {
+    if (isFormMode) {
+      return
+    }
     if (searchDebounceMs <= 0) {
       commitSearchValue(value)
     }
@@ -241,6 +248,18 @@ export function DataTableToolbar<TData>(props: DataTableToolbarProps<TData>) {
     const value = event.currentTarget.value
     setSearchDraft({ baseValue: currentSearchValue, value })
     queueSearchValue(value)
+  }
+
+  const handleApplySearch = () => {
+    setIsSearchComposing(false)
+    commitSearchValue(searchValue)
+    setSearchDraft({ baseValue: searchValue, value: searchValue })
+    props.onSearch?.()
+  }
+
+  const handleFormSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    handleApplySearch()
   }
 
   const searchInput = (
@@ -287,13 +306,19 @@ export function DataTableToolbar<TData>(props: DataTableToolbarProps<TData>) {
   let resetButton: ReactNode = null
   if (hasSearch) {
     resetButton = (
-      <Button variant='outline' onClick={handleReset} disabled={!isFiltered}>
+      <Button
+        type='button'
+        variant='outline'
+        onClick={handleReset}
+        disabled={!isFiltered}
+      >
         {t('Reset')}
       </Button>
     )
   } else if (isFiltered) {
     resetButton = (
       <Button
+        type='button'
         variant='ghost'
         onClick={handleReset}
         className='text-muted-foreground hover:text-foreground gap-1 px-2'
@@ -305,9 +330,9 @@ export function DataTableToolbar<TData>(props: DataTableToolbarProps<TData>) {
   }
 
   const searchButton = hasSearch ? (
-    <Button onClick={props.onSearch} disabled={props.searchLoading}>
+    <Button type='submit' disabled={props.searchLoading}>
       {props.searchLoading && <Loader2 className='animate-spin' />}
-      {t('Search')}
+      {t('Query')}
     </Button>
   ) : null
 
@@ -319,6 +344,7 @@ export function DataTableToolbar<TData>(props: DataTableToolbarProps<TData>) {
 
   const expandToggle = hasExpandable ? (
     <Button
+      type='button'
       variant='ghost'
       onClick={() => setExpanded((p) => !p)}
       aria-expanded={expanded}
@@ -373,13 +399,8 @@ export function DataTableToolbar<TData>(props: DataTableToolbarProps<TData>) {
     )
   }
 
-  return (
-    <div
-      className={cn(
-        'flex flex-wrap items-center gap-2 sm:gap-3',
-        props.className
-      )}
-    >
+  const toolbarBody = (
+    <>
       {props.customSearch !== undefined ? props.customSearch : searchInput}
       {props.additionalSearch}
       {filterChips}
@@ -393,6 +414,31 @@ export function DataTableToolbar<TData>(props: DataTableToolbarProps<TData>) {
         {viewOptionsNode}
         {expandToggle}
       </div>
+    </>
+  )
+
+  if (isFormMode) {
+    return (
+      <form
+        className={cn(
+          'flex flex-wrap items-center gap-2 sm:gap-3',
+          props.className
+        )}
+        onSubmit={handleFormSubmit}
+      >
+        {toolbarBody}
+      </form>
+    )
+  }
+
+  return (
+    <div
+      className={cn(
+        'flex flex-wrap items-center gap-2 sm:gap-3',
+        props.className
+      )}
+    >
+      {toolbarBody}
     </div>
   )
 }

@@ -23,6 +23,9 @@ import { toast } from 'sonner'
 import { Dialog } from '@/components/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
 
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
+
 import { getMultiKeyStatus, updateChannelKeyLimits } from '../../api'
 import { parseModelsString } from '../../lib'
 import type { KeyStatus } from '../../types'
@@ -37,6 +40,8 @@ type SingleKeyLimitsDialogProps = {
 export function SingleKeyLimitsDialog(props: SingleKeyLimitsDialogProps) {
   const { t } = useTranslation()
   const { currentRow } = useChannels()
+  const currentUser = useAuthStore((s) => s.auth.user)
+  const canEditKeyLimits = currentUser?.role === ROLE.SUPER_ADMIN
   const [keyStatus, setKeyStatus] = useState<KeyStatus | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -45,9 +50,15 @@ export function SingleKeyLimitsDialog(props: SingleKeyLimitsDialogProps) {
     [currentRow?.models]
   )
   const channelId = currentRow?.id
-  const dialogOpen = props.open
+  const dialogOpen = props.open && canEditKeyLimits
   const onOpenChangeRef = useRef(props.onOpenChange)
   onOpenChangeRef.current = props.onOpenChange
+
+  useEffect(() => {
+    if (props.open && !canEditKeyLimits) {
+      onOpenChangeRef.current(false)
+    }
+  }, [canEditKeyLimits, props.open])
 
   useEffect(() => {
     if (!dialogOpen || channelId == null) {

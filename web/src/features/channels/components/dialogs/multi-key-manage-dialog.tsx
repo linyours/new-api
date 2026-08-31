@@ -41,6 +41,7 @@ import {
   ADMIN_PERMISSION_RESOURCES,
   hasPermission,
 } from '@/lib/admin-permissions'
+import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
@@ -82,11 +83,7 @@ export function MultiKeyManageDialog({
   const { currentRow } = useChannels()
   const queryClient = useQueryClient()
   const currentUser = useAuthStore((s) => s.auth.user)
-  const canConfigure = hasPermission(
-    currentUser,
-    ADMIN_PERMISSION_RESOURCES.CHANNEL,
-    ADMIN_PERMISSION_ACTIONS.WRITE
-  )
+  const canConfigure = currentUser?.role === ROLE.SUPER_ADMIN
   const canEditSensitive = hasPermission(
     currentUser,
     ADMIN_PERMISSION_RESOURCES.CHANNEL,
@@ -450,43 +447,47 @@ export function MultiKeyManageDialog({
                     className: 'w-32',
                     cell: (key) => renderStatusBadge(key.status),
                   },
-                  {
-                    id: 'rpm',
-                    header: t('RPM limit'),
-                    className: 'w-28',
-                    cellClassName: 'font-mono text-sm',
-                    cell: (key) => {
-                      const overrideCount = Object.keys(
-                        key.model_rpm_limits || {}
-                      ).length
-                      return (
-                        <div className='flex flex-col'>
-                          <span>
-                            {key.effective_rpm > 0
-                              ? key.effective_rpm
-                              : t('Unlimited')}
-                          </span>
-                          {overrideCount > 0 && (
-                            <span className='text-muted-foreground text-xs'>
-                              {t('{{count}} model overrides', {
-                                count: overrideCount,
-                              })}
-                            </span>
-                          )}
-                        </div>
-                      )
-                    },
-                  },
-                  {
-                    id: 'quota',
-                    header: t('USD usage'),
-                    className: 'w-48',
-                    cellClassName: 'font-mono text-sm',
-                    cell: (key) =>
-                      key.effective_quota > 0
-                        ? `${formatChannelKeyQuotaUSD(key.quota_used)} / ${formatChannelKeyQuotaUSD(key.effective_quota)}`
-                        : `${formatChannelKeyQuotaUSD(key.quota_used)} / ${t('Unlimited')}`,
-                  },
+                  ...(canConfigure
+                    ? [
+                        {
+                          id: 'rpm',
+                          header: t('RPM limit'),
+                          className: 'w-28',
+                          cellClassName: 'font-mono text-sm',
+                          cell: (key: KeyStatus) => {
+                            const overrideCount = Object.keys(
+                              key.model_rpm_limits || {}
+                            ).length
+                            return (
+                              <div className='flex flex-col'>
+                                <span>
+                                  {key.effective_rpm > 0
+                                    ? key.effective_rpm
+                                    : t('Unlimited')}
+                                </span>
+                                {overrideCount > 0 && (
+                                  <span className='text-muted-foreground text-xs'>
+                                    {t('{{count}} model overrides', {
+                                      count: overrideCount,
+                                    })}
+                                  </span>
+                                )}
+                              </div>
+                            )
+                          },
+                        },
+                        {
+                          id: 'quota',
+                          header: t('USD usage'),
+                          className: 'w-48',
+                          cellClassName: 'font-mono text-sm',
+                          cell: (key: KeyStatus) =>
+                            key.effective_quota > 0
+                              ? `${formatChannelKeyQuotaUSD(key.quota_used)} / ${formatChannelKeyQuotaUSD(key.effective_quota)}`
+                              : `${formatChannelKeyQuotaUSD(key.quota_used)} / ${t('Unlimited')}`,
+                        },
+                      ]
+                    : []),
                   {
                     id: 'reason',
                     header: t('Disabled Reason'),

@@ -412,6 +412,14 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'channel.tag_batch_set': 'Batch set tag for {{count}} channels',
   'channel.copy':
     'Copied channel (source ID: {{sourceId}}) to {{name}} (new ID: {{id}})',
+  'channel.template.create':
+    'Created channel template {{name}} (ID: {{id}})',
+  'channel.template.update':
+    'Updated channel template {{name}} (ID: {{id}})',
+  'channel.template.delete':
+    'Deleted channel template {{name}} (ID: {{id}})',
+  'channel.template.apply':
+    'Applied channel template {{name}} and created {{count}} channels',
   'channel.multi_key_manage':
     'Multi-key management {{action}} on channel (ID: {{id}})',
   'channel.upstream_apply':

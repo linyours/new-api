@@ -207,6 +207,52 @@ func TestCopyChannelCopiesPerKeyModelRPMLimits(t *testing.T) {
 	assert.Equal(t, model.ChannelKeyModelRpmLimits{"gpt-4o": 12}, copied[0].ModelRpmLimits)
 }
 
+func TestCopyChannelKeepsOriginalCreator(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(
+		&model.ChannelKey{},
+		&model.ChannelKeyQuotaReservation{},
+		&model.ChannelKeyEvent{},
+		&model.ChannelKeyArchive{},
+	))
+	model.InitChannelKeyCache(nil)
+	t.Cleanup(func() { model.InitChannelKeyCache(nil) })
+
+	origin := &model.Channel{
+		Type:      constant.ChannelTypeOpenAI,
+		Name:      "owned channel",
+		Key:       "sk-owned",
+		Models:    "gpt-4o",
+		Group:     "default",
+		Status:    common.ChannelStatusEnabled,
+		CreatedBy: 42,
+		UpdatedBy: 42,
+	}
+	require.NoError(t, origin.Insert())
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("id", 99)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", origin.Id)}}
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/channel/copy", nil)
+
+	CopyChannel(ctx)
+
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Id int `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.True(t, response.Success)
+
+	copied, err := model.GetChannelById(response.Data.Id, false)
+	require.NoError(t, err)
+	assert.Equal(t, 42, copied.CreatedBy)
+	assert.Equal(t, 99, copied.UpdatedBy)
+}
+
 func TestDeleteChannelResetsProxyCacheWhenPreReadFails(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.AutoMigrate(&model.Log{}))

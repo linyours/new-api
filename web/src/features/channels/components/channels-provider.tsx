@@ -46,6 +46,9 @@ type DialogType =
   | 'tag-batch-edit'
   | 'edit-tag'
   | 'copy-channel'
+  | 'save-as-template'
+  | 'manage-templates'
+  | 'apply-template'
   | null
 
 type UpstreamUpdateState = ReturnType<typeof useChannelUpstreamUpdates>
@@ -65,6 +68,8 @@ type ChannelsContextType = {
   setBatchMode: (enabled: boolean) => void
   sensitiveVisible: boolean
   setSensitiveVisible: (visible: boolean) => void
+  applyTemplateId: number | null
+  setApplyTemplateId: (id: number | null) => void
   upstream: UpstreamUpdateState
 }
 
@@ -92,6 +97,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
   })
   const [batchMode, setBatchMode] = useState(false)
   const [sensitiveVisible, setSensitiveVisible] = useState(true)
+  const [applyTemplateId, setApplyTemplateId] = useState<number | null>(null)
 
   const queryClient = useQueryClient()
   const refreshChannels = useCallback(async () => {
@@ -118,6 +124,8 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       setBatchMode,
       sensitiveVisible,
       setSensitiveVisible,
+      applyTemplateId,
+      setApplyTemplateId,
       upstream,
     }),
     [
@@ -128,6 +136,7 @@ export function ChannelsProvider({ children }: { children: React.ReactNode }) {
       idSort,
       batchMode,
       sensitiveVisible,
+      applyTemplateId,
       upstream,
     ]
   )
