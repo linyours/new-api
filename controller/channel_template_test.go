@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -109,6 +110,68 @@ func TestCreateAndApplyChannelTemplate(t *testing.T) {
 
 	copiedKey := model.CacheGetChannelKeys(applyResponse.Data.Channels[0].Id)[0]
 	assert.Equal(t, model.ChannelKeyModelRpmLimits{"gpt-4o": 7}, copiedKey.ModelRpmLimits)
+}
+
+func TestApplyChannelTemplateItemsOptionalProxy(t *testing.T) {
+	origin := setupChannelTemplateControllerTestDB(t)
+	origin.SetSetting(dto.ChannelSettings{Proxy: "socks5://template-proxy.example:1080"})
+	require.NoError(t, origin.Update())
+
+	createRecorder := httptest.NewRecorder()
+	createCtx, _ := gin.CreateTestContext(createRecorder)
+	createCtx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", origin.Id)}}
+	createBody, err := common.Marshal(map[string]any{
+		"name": "openai-proxy-tpl",
+	})
+	require.NoError(t, err)
+	createCtx.Request = httptest.NewRequest(http.MethodPost, "/api/channel/templates/from_channel", bytes.NewReader(createBody))
+	createCtx.Request.Header.Set("Content-Type", "application/json")
+	CreateChannelTemplateFromChannel(createCtx)
+
+	var createResponse struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Id int `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(createRecorder.Body.Bytes(), &createResponse))
+	require.True(t, createResponse.Success, createRecorder.Body.String())
+
+	applyBody, err := common.Marshal(map[string]any{
+		"items": []map[string]any{
+			{"key": "sk-withproxyabcdef", "proxy": "socks5://user:pass@proxy1.example:1080"},
+			{"key": "sk-noproxyxyz123", "proxy": ""},
+		},
+	})
+	require.NoError(t, err)
+	applyRecorder := httptest.NewRecorder()
+	applyCtx, _ := gin.CreateTestContext(applyRecorder)
+	applyCtx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", createResponse.Data.Id)}}
+	applyCtx.Request = httptest.NewRequest(http.MethodPost, "/api/channel/templates/apply", bytes.NewReader(applyBody))
+	applyCtx.Request.Header.Set("Content-Type", "application/json")
+	ApplyChannelTemplate(applyCtx)
+
+	var applyResponse struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Count    int `json:"count"`
+			Channels []struct {
+				Id   int    `json:"id"`
+				Name string `json:"name"`
+			} `json:"channels"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(applyRecorder.Body.Bytes(), &applyResponse))
+	require.True(t, applyResponse.Success, applyRecorder.Body.String())
+	require.Equal(t, 2, applyResponse.Data.Count)
+
+	var withProxy model.Channel
+	require.NoError(t, model.DB.First(&withProxy, applyResponse.Data.Channels[0].Id).Error)
+	assert.Equal(t, "socks5://user:pass@proxy1.example:1080", withProxy.GetSetting().Proxy)
+
+	var withoutProxy model.Channel
+	require.NoError(t, model.DB.First(&withoutProxy, applyResponse.Data.Channels[1].Id).Error)
+	assert.Empty(t, withoutProxy.GetSetting().Proxy)
 }
 
 func TestApplyChannelTemplateDoesNotChangeExistingAddChannel(t *testing.T) {

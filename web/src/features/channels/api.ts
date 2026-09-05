@@ -725,7 +725,11 @@ export async function deleteChannelTemplate(
 
 export async function applyChannelTemplate(
   id: number,
-  data: { keys: string; name_suffix_length?: number }
+  data: {
+    keys?: string
+    items?: { key: string; proxy?: string }[]
+    name_suffix_length?: number
+  }
 ): Promise<ApplyChannelTemplateResponse> {
   const res = await api.post(
     `/api/channel/templates/${id}/apply`,

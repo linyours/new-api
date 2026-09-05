@@ -7,8 +7,8 @@ published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version.
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { Loader2, Plus, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -27,20 +27,30 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 
 import { applyChannelTemplate, getChannelTemplates } from '../../api'
-import { SUCCESS_MESSAGES } from '../../constants'
+import { ERROR_MESSAGES, SUCCESS_MESSAGES } from '../../constants'
 import {
   DEFAULT_CHANNEL_TEMPLATE_NAME_SUFFIX_LENGTH,
   buildChannelTemplateChannelName,
   channelsQueryKeys,
   getChannelTypeLabel,
+  isOptionalProxyURL,
+  normalizeTemplateApplyItems,
   parseChannelTemplateConfig,
+  parseTemplateApplyKeyProxyLines,
   splitTemplateApplyKeys,
+  type ChannelTemplateApplyItem,
 } from '../../lib'
 import { useChannels } from '../channels-provider'
 
 type ApplyChannelTemplateDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
+}
+
+type ApplyRow = ChannelTemplateApplyItem & { id: number }
+
+function createEmptyRow(id: number): ApplyRow {
+  return { id, key: '', proxy: '' }
 }
 
 export function ApplyChannelTemplateDialog({
@@ -50,8 +60,10 @@ export function ApplyChannelTemplateDialog({
   const { t } = useTranslation()
   const { applyTemplateId, setApplyTemplateId } = useChannels()
   const queryClient = useQueryClient()
+  const nextRowId = useRef(1)
   const [selectedId, setSelectedId] = useState<string>('')
-  const [keys, setKeys] = useState('')
+  const [vertexKeys, setVertexKeys] = useState('')
+  const [rows, setRows] = useState<ApplyRow[]>([createEmptyRow(0)])
   const [suffixLength, setSuffixLength] = useState(
     DEFAULT_CHANNEL_TEMPLATE_NAME_SUFFIX_LENGTH
   )
@@ -77,7 +89,9 @@ export function ApplyChannelTemplateDialog({
 
   useEffect(() => {
     if (!open) {
-      setKeys('')
+      setVertexKeys('')
+      setRows([createEmptyRow(0)])
+      nextRowId.current = 1
       setApplyTemplateId(null)
     }
   }, [open, setApplyTemplateId])
@@ -100,24 +114,67 @@ export function ApplyChannelTemplateDialog({
         selectedTemplate.channel_type
       )
     : null
+  const isVertexJson = Boolean(selectedConfig?.vertexJson)
+
+  const applyItems = useMemo(() => {
+    if (isVertexJson) {
+      return splitTemplateApplyKeys(vertexKeys, { vertexJson: true }).map(
+        (key) => ({ key, proxy: '' })
+      )
+    }
+    return normalizeTemplateApplyItems(rows)
+  }, [isVertexJson, rows, vertexKeys])
 
   const previewNames = useMemo(() => {
     if (!selectedTemplate) return []
-    const parsedKeys = splitTemplateApplyKeys(keys, {
-      vertexJson: selectedConfig?.vertexJson,
-    })
-    return parsedKeys.slice(0, 8).map((key) =>
-      buildChannelTemplateChannelName(
-        selectedTemplate.name,
-        key,
-        suffixLength
+    return applyItems
+      .slice(0, 8)
+      .map((item) =>
+        buildChannelTemplateChannelName(
+          selectedTemplate.name,
+          item.key,
+          suffixLength
+        )
       )
-    )
-  }, [keys, selectedConfig?.vertexJson, selectedTemplate, suffixLength])
+  }, [applyItems, selectedTemplate, suffixLength])
 
-  const keyCount = splitTemplateApplyKeys(keys, {
-    vertexJson: selectedConfig?.vertexJson,
-  }).length
+  const keyCount = applyItems.length
+
+  const updateRow = (
+    id: number,
+    field: 'key' | 'proxy',
+    value: string
+  ) => {
+    setRows((prev) =>
+      prev.map((row) => (row.id === id ? { ...row, [field]: value } : row))
+    )
+  }
+
+  const addRow = () => {
+    const id = nextRowId.current++
+    setRows((prev) => [...prev, createEmptyRow(id)])
+  }
+
+  const removeRow = (id: number) => {
+    setRows((prev) => {
+      if (prev.length <= 1) {
+        return [createEmptyRow(nextRowId.current++)]
+      }
+      return prev.filter((row) => row.id !== id)
+    })
+  }
+
+  const handlePasteKeys = (raw: string) => {
+    const parsed = parseTemplateApplyKeyProxyLines(raw)
+    if (parsed.length === 0) return
+    setRows(
+      parsed.map((item) => ({
+        id: nextRowId.current++,
+        key: item.key,
+        proxy: item.proxy,
+      }))
+    )
+  }
 
   const handleApply = async () => {
     if (!selectedTemplate) {
@@ -125,13 +182,28 @@ export function ApplyChannelTemplateDialog({
       return
     }
     if (keyCount === 0) {
-      toast.error(t('Enter one key per line'))
+      toast.error(
+        isVertexJson
+          ? t('Enter one key per line')
+          : t('Enter at least one API key')
+      )
       return
     }
+    if (!isVertexJson) {
+      for (const item of applyItems) {
+        if (!isOptionalProxyURL(item.proxy)) {
+          toast.error(t(ERROR_MESSAGES.INVALID_PROXY))
+          return
+        }
+      }
+    }
+
     setIsApplying(true)
     try {
       const response = await applyChannelTemplate(selectedTemplate.id, {
-        keys,
+        ...(isVertexJson
+          ? { keys: vertexKeys }
+          : { items: applyItems.map((item) => ({ key: item.key, proxy: item.proxy })) }),
         name_suffix_length: suffixLength,
       })
       if (!response.success) {
@@ -159,9 +231,15 @@ export function ApplyChannelTemplateDialog({
       open={open}
       onOpenChange={onOpenChange}
       title={t('Create from Template')}
-      description={t(
-        'Paste keys to create one channel per key. Names use the template name plus the last characters of each key.'
-      )}
+      description={
+        isVertexJson
+          ? t(
+              'Paste keys to create one channel per key. Names use the template name plus the last characters of each key.'
+            )
+          : t(
+              'Add one API key per row. Optionally set a SOCKS5/HTTP proxy for that channel; leave proxy empty for no proxy.'
+            )
+      }
       contentHeight='auto'
       bodyClassName='space-y-4'
       footer={
@@ -229,21 +307,95 @@ export function ApplyChannelTemplateDialog({
                 </p>
               ) : null}
             </div>
-            <div className='space-y-2'>
-              <Label htmlFor='template-keys'>{t('API Keys')}</Label>
-              <Textarea
-                id='template-keys'
-                value={keys}
-                onChange={(event) => setKeys(event.target.value)}
-                placeholder={
-                  selectedConfig?.vertexJson
-                    ? t('Paste a JSON array of Vertex service accounts')
-                    : t('Enter one key per line')
-                }
-                rows={8}
-                disabled={isApplying}
-              />
-            </div>
+
+            {isVertexJson ? (
+              <div className='space-y-2'>
+                <Label htmlFor='template-keys'>{t('API Keys')}</Label>
+                <Textarea
+                  id='template-keys'
+                  value={vertexKeys}
+                  onChange={(event) => setVertexKeys(event.target.value)}
+                  placeholder={t(
+                    'Paste a JSON array of Vertex service accounts'
+                  )}
+                  rows={8}
+                  disabled={isApplying}
+                />
+              </div>
+            ) : (
+              <div className='space-y-2'>
+                <div className='flex items-center justify-between gap-2'>
+                  <Label>{t('API Keys')}</Label>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    size='sm'
+                    onClick={addRow}
+                    disabled={isApplying}
+                  >
+                    <Plus className='mr-1 h-4 w-4' />
+                    {t('Add row')}
+                  </Button>
+                </div>
+                <div className='space-y-2'>
+                  <div className='text-muted-foreground grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 text-xs font-medium'>
+                    <span>{t('API Key')}</span>
+                    <span>{t('Proxy (optional)')}</span>
+                    <span className='w-9' />
+                  </div>
+                  {rows.map((row) => (
+                    <div
+                      key={row.id}
+                      className='grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2'
+                    >
+                      <Input
+                        value={row.key}
+                        onChange={(event) =>
+                          updateRow(row.id, 'key', event.target.value)
+                        }
+                        onPaste={(event) => {
+                          const text = event.clipboardData.getData('text')
+                          if (!text.includes('\n') && !text.includes('\t')) {
+                            return
+                          }
+                          event.preventDefault()
+                          handlePasteKeys(text)
+                        }}
+                        placeholder={t('sk-...')}
+                        disabled={isApplying}
+                        autoComplete='off'
+                      />
+                      <Input
+                        value={row.proxy}
+                        onChange={(event) =>
+                          updateRow(row.id, 'proxy', event.target.value)
+                        }
+                        placeholder={t('socks5://user:pass@host:port')}
+                        disabled={isApplying}
+                        autoComplete='off'
+                      />
+                      <Button
+                        type='button'
+                        variant='ghost'
+                        size='icon'
+                        className='shrink-0'
+                        onClick={() => removeRow(row.id)}
+                        disabled={isApplying}
+                        aria-label={t('Remove row')}
+                      >
+                        <Trash2 className='h-4 w-4' />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+                <p className='text-muted-foreground text-xs'>
+                  {t(
+                    'Paste multiple lines into the key field to fill rows. Use tab or a space before socks5://... / http(s)://... to include a proxy.'
+                  )}
+                </p>
+              </div>
+            )}
+
             <div className='space-y-2'>
               <Label htmlFor='apply-suffix-length'>
                 {t('Key suffix length')}
@@ -273,7 +425,11 @@ export function ApplyChannelTemplateDialog({
                     <li key={name}>{name}</li>
                   ))}
                   {keyCount > previewNames.length ? (
-                    <li>{t('and {{count}} more', { count: keyCount - previewNames.length })}</li>
+                    <li>
+                      {t('and {{count}} more', {
+                        count: keyCount - previewNames.length,
+                      })}
+                    </li>
                   ) : null}
                 </ul>
               </div>

@@ -77,6 +77,11 @@ export function buildChannelTemplateChannelName(
   return `${trimmedName}-${suffix}`
 }
 
+export type ChannelTemplateApplyItem = {
+  key: string
+  proxy: string
+}
+
 export function splitTemplateApplyKeys(
   raw: string,
   options?: { vertexJson?: boolean }
@@ -101,6 +106,52 @@ export function splitTemplateApplyKeys(
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
+}
+
+/**
+ * Parse pasted key[+proxy] lines for the apply-template form.
+ * Supports: `key`, `key<TAB>proxy`, or `key socks5://...` / `key http(s)://...`.
+ */
+export function parseTemplateApplyKeyProxyLines(
+  raw: string
+): ChannelTemplateApplyItem[] {
+  const items: ChannelTemplateApplyItem[] = []
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    const tabIndex = trimmed.indexOf('\t')
+    if (tabIndex >= 0) {
+      const key = trimmed.slice(0, tabIndex).trim()
+      const proxy = trimmed.slice(tabIndex + 1).trim()
+      if (key) items.push({ key, proxy })
+      continue
+    }
+
+    const proxyMatch = trimmed.match(
+      /^(.+?)\s+((?:socks5h?|https?):\/\/\S+)\s*$/i
+    )
+    if (proxyMatch) {
+      const key = proxyMatch[1].trim()
+      const proxy = proxyMatch[2].trim()
+      if (key) items.push({ key, proxy })
+      continue
+    }
+
+    items.push({ key: trimmed, proxy: '' })
+  }
+  return items
+}
+
+export function normalizeTemplateApplyItems(
+  items: ChannelTemplateApplyItem[]
+): ChannelTemplateApplyItem[] {
+  return items
+    .map((item) => ({
+      key: item.key.trim(),
+      proxy: item.proxy.trim(),
+    }))
+    .filter((item) => item.key.length > 0)
 }
 
 export function parseChannelTemplateConfig(

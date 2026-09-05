@@ -12,6 +12,8 @@ import { describe, it } from 'node:test'
 import {
   buildChannelTemplateChannelName,
   channelTemplateNameSuffix,
+  normalizeTemplateApplyItems,
+  parseTemplateApplyKeyProxyLines,
   splitTemplateApplyKeys,
 } from '../channel-template'
 
@@ -46,6 +48,30 @@ describe('channel template naming', () => {
         vertexJson: true,
       }),
       ['{"client_email":"a@x.com"}', '{"client_email":"b@x.com"}']
+    )
+  })
+
+  it('parses key and optional proxy lines', () => {
+    assert.deepEqual(
+      parseTemplateApplyKeyProxyLines(
+        'sk1\tsocks5://proxy1.example:1080\nsk2 socks5://user:pass@host:1080\nsk3\n'
+      ),
+      [
+        { key: 'sk1', proxy: 'socks5://proxy1.example:1080' },
+        { key: 'sk2', proxy: 'socks5://user:pass@host:1080' },
+        { key: 'sk3', proxy: '' },
+      ]
+    )
+    assert.deepEqual(
+      normalizeTemplateApplyItems([
+        { key: '  sk-a  ', proxy: '  ' },
+        { key: '', proxy: 'socks5://x' },
+        { key: 'sk-b', proxy: 'socks5://y' },
+      ]),
+      [
+        { key: 'sk-a', proxy: '' },
+        { key: 'sk-b', proxy: 'socks5://y' },
+      ]
     )
   })
 })

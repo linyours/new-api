@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -28,9 +29,23 @@ type updateChannelTemplateRequest struct {
 	SourceChannelId  int     `json:"source_channel_id"`
 }
 
+type applyChannelTemplateKeyItem struct {
+	Key   string `json:"key"`
+	Proxy string `json:"proxy"`
+}
+
 type applyChannelTemplateRequest struct {
-	Keys             string `json:"keys"`
-	NameSuffixLength *int   `json:"name_suffix_length"`
+	// Keys keeps the legacy newline / Vertex JSON paste path.
+	// When Items is non-empty it takes precedence.
+	Keys             string                        `json:"keys"`
+	Items            []applyChannelTemplateKeyItem `json:"items"`
+	NameSuffixLength *int                          `json:"name_suffix_length"`
+}
+
+type applyChannelTemplateEntry struct {
+	Key           string
+	Proxy         string
+	OverrideProxy bool
 }
 
 type appliedChannelTemplateItem struct {
@@ -218,12 +233,12 @@ func ApplyChannelTemplate(c *gin.Context) {
 		return
 	}
 
-	keys, err := splitTemplateApplyKeys(base, req.Keys)
+	entries, err := resolveApplyChannelTemplateEntries(base, req)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if len(keys) > model.MaxChannelTemplateApplyKeys {
+	if len(entries) > model.MaxChannelTemplateApplyKeys {
 		common.ApiErrorMsg(c, fmt.Sprintf("cannot apply more than %d keys at once", model.MaxChannelTemplateApplyKeys))
 		return
 	}
@@ -234,18 +249,24 @@ func ApplyChannelTemplate(c *gin.Context) {
 	}
 	suffixLength = model.NormalizeChannelTemplateNameSuffixLength(suffixLength)
 
-	reserved := make(map[string]struct{}, len(keys))
-	channels := make([]model.Channel, 0, len(keys))
+	reserved := make(map[string]struct{}, len(entries))
+	channels := make([]model.Channel, 0, len(entries))
 	now := common.GetTimestamp()
 	operatorId := c.GetInt("id")
-	for _, key := range keys {
+	for _, entry := range entries {
 		channel := *base
-		channel.Key = key
+		channel.Key = entry.Key
 		channel.CreatedTime = now
 		channel.CreatedBy = operatorId
 		channel.UpdatedBy = operatorId
+		if entry.OverrideProxy {
+			if err := applyChannelTemplateProxy(&channel, entry.Proxy); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
 		channel.Name, err = model.AllocateUniqueChannelName(
-			model.BuildChannelTemplateChannelName(template.Name, key, suffixLength),
+			model.BuildChannelTemplateChannelName(template.Name, entry.Key, suffixLength),
 			reserved,
 		)
 		if err != nil {
@@ -375,6 +396,59 @@ func attachInsertedChannelIDs(channels []model.Channel) error {
 		}
 		channels[i].Id = id
 	}
+	return nil
+}
+
+func resolveApplyChannelTemplateEntries(
+	channel *model.Channel,
+	req applyChannelTemplateRequest,
+) ([]applyChannelTemplateEntry, error) {
+	if len(req.Items) > 0 {
+		entries := make([]applyChannelTemplateEntry, 0, len(req.Items))
+		for _, item := range req.Items {
+			key := strings.TrimSpace(item.Key)
+			if key == "" {
+				continue
+			}
+			entries = append(entries, applyChannelTemplateEntry{
+				Key:           key,
+				Proxy:         strings.TrimSpace(item.Proxy),
+				OverrideProxy: true,
+			})
+		}
+		if len(entries) == 0 {
+			return nil, errors.New("keys cannot be empty")
+		}
+		return entries, nil
+	}
+
+	keys, err := splitTemplateApplyKeys(channel, req.Keys)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]applyChannelTemplateEntry, 0, len(keys))
+	for _, key := range keys {
+		entries = append(entries, applyChannelTemplateEntry{
+			Key:           key,
+			OverrideProxy: false,
+		})
+	}
+	return entries, nil
+}
+
+func applyChannelTemplateProxy(channel *model.Channel, proxy string) error {
+	if channel == nil {
+		return errors.New("channel cannot be empty")
+	}
+	proxy = strings.TrimSpace(proxy)
+	if proxy != "" {
+		if err := service.ValidateProxyURL(proxy); err != nil {
+			return fmt.Errorf("invalid channel proxy: %w", err)
+		}
+	}
+	settings := channel.GetSetting()
+	settings.Proxy = proxy
+	channel.SetSetting(settings)
 	return nil
 }
 
