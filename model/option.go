@@ -175,6 +175,11 @@ func InitOptionMap() {
 	common.OptionMap["AutomaticDisableKeywords"] = operation_setting.AutomaticDisableKeywordsToString()
 	common.OptionMap["AutomaticDisableStatusCodes"] = operation_setting.AutomaticDisableStatusCodesToString()
 	common.OptionMap["AutomaticRetryStatusCodes"] = operation_setting.AutomaticRetryStatusCodesToString()
+	common.OptionMap["ChannelHealthErrorStatusCodes"] = operation_setting.ChannelHealthErrorStatusCodesToString()
+	common.OptionMap["ChannelHealthMinTotal"] = strconv.Itoa(operation_setting.GetChannelHealthMinTotal())
+	common.OptionMap["ChannelHealthAlertBelowPercent"] = strconv.Itoa(operation_setting.GetChannelHealthAlertBelowPercent())
+	common.OptionMap["ChannelHealthWebhookUrl"] = operation_setting.ChannelHealthWebhookUrl
+	common.OptionMap["ChannelHealthWebhookSecret"] = operation_setting.ChannelHealthWebhookSecret
 	common.OptionMap["ExposeRatioEnabled"] = strconv.FormatBool(ratio_setting.IsExposeRatioEnabled())
 
 	// Seed from RELAY_TIMEOUT so upgrades keep the previous env timeout until
@@ -244,6 +249,15 @@ func validateOptionValue(key string, value string) error {
 	}
 	if key == "error_log_setting.retain_days" {
 		return operation_setting.ValidateErrorLogRetainDays(value)
+	}
+	if key == "ChannelHealthWebhookUrl" {
+		return operation_setting.ValidateChannelHealthWebhookURL(value)
+	}
+	if key == "ChannelHealthMinTotal" {
+		return operation_setting.ValidateChannelHealthMinTotal(value)
+	}
+	if key == "ChannelHealthAlertBelowPercent" {
+		return operation_setting.ValidateChannelHealthAlertBelowPercent(value)
 	}
 	return nil
 }
@@ -624,6 +638,16 @@ func updateOptionMap(key string, value string) (err error) {
 		err = operation_setting.AutomaticDisableStatusCodesFromString(value)
 	case "AutomaticRetryStatusCodes":
 		err = operation_setting.AutomaticRetryStatusCodesFromString(value)
+	case "ChannelHealthErrorStatusCodes":
+		err = operation_setting.ChannelHealthErrorStatusCodesFromString(value)
+	case "ChannelHealthMinTotal":
+		operation_setting.ChannelHealthMinTotal, _ = strconv.Atoi(value)
+	case "ChannelHealthAlertBelowPercent":
+		operation_setting.ChannelHealthAlertBelowPercent, _ = strconv.Atoi(value)
+	case "ChannelHealthWebhookUrl":
+		operation_setting.ChannelHealthWebhookUrl = strings.TrimSpace(value)
+	case "ChannelHealthWebhookSecret":
+		operation_setting.ChannelHealthWebhookSecret = value
 	case "StreamCacheQueueLength":
 		setting.StreamCacheQueueLength, _ = strconv.Atoi(value)
 	case "PayMethods":

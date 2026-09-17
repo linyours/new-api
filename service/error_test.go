@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -148,6 +149,25 @@ func TestRelayErrorHandlerKeepsInvalidJSONBodyInDebugLog(t *testing.T) {
 	require.NotNil(t, newAPIError)
 	require.NotContains(t, logBuffer.String(), "[truncated")
 	require.Contains(t, logBuffer.String(), body)
+}
+
+func TestIsTimeoutError(t *testing.T) {
+	require.False(t, IsTimeoutError(nil))
+	require.False(t, IsTimeoutError(errors.New("connection refused")))
+	require.True(t, IsTimeoutError(context.DeadlineExceeded))
+	require.True(t, IsTimeoutError(fmt.Errorf("post https://example.com: %w", context.DeadlineExceeded)))
+	require.True(t, IsTimeoutError(errors.New("context deadline exceeded")))
+	require.True(t, IsTimeoutError(errors.New("read tcp 1.1.1.1:443: i/o timeout")))
+	require.True(t, IsTimeoutError(errors.New("net/http: TLS handshake timeout")))
+	require.False(t, IsTimeoutError(errors.New("upstream error: do request failed")))
+}
+
+func TestIsRelayTimeoutError(t *testing.T) {
+	require.False(t, IsRelayTimeoutError(nil))
+	require.False(t, IsRelayTimeoutError(types.NewError(errors.New("connection refused"), types.ErrorCodeDoRequestFailed)))
+	require.True(t, IsRelayTimeoutError(types.NewError(context.DeadlineExceeded, types.ErrorCodeDoRequestFailed)))
+	require.True(t, IsRelayTimeoutError(types.NewOpenAIError(errors.New("gateway timeout"), types.ErrorCodeDoRequestFailed, http.StatusGatewayTimeout)))
+	require.True(t, IsRelayTimeoutError(types.NewOpenAIError(errors.New("slow"), types.ErrorCodeChannelResponseTimeExceeded, http.StatusRequestTimeout)))
 }
 
 func withDebugEnabled(t *testing.T, enabled bool) {

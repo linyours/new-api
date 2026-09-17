@@ -16,8 +16,17 @@ type StatusCodeRange struct {
 
 var AutomaticDisableStatusCodeRanges = []StatusCodeRange{{Start: 401, End: 401}}
 
+// ChannelHealthErrorStatusCodeRanges lists upstream HTTP codes that count as
+// channel-health failures. Timeouts always count, even if omitted here.
+// Default excludes 400 (client) and 429 (rate limit).
+var ChannelHealthErrorStatusCodeRanges = []StatusCodeRange{
+	{Start: 401, End: 428},
+	{Start: 430, End: 599},
+}
+
 // Default behavior matches legacy hardcoded retry rules in controller/relay.go shouldRetry:
 // retry for 1xx, 3xx, 4xx(except 400/408), 5xx(except 504/524), and no retry for 2xx.
+// 408/504/524 always skip retry even if included in AutomaticRetryStatusCodes.
 var AutomaticRetryStatusCodeRanges = []StatusCodeRange{
 	{Start: 100, End: 199},
 	{Start: 300, End: 399},
@@ -29,6 +38,7 @@ var AutomaticRetryStatusCodeRanges = []StatusCodeRange{
 }
 
 var alwaysSkipRetryStatusCodes = map[int]struct{}{
+	408: {},
 	504: {},
 	524: {},
 }
@@ -75,6 +85,23 @@ func IsAlwaysSkipRetryStatusCode(code int) bool {
 func IsAlwaysSkipRetryCode(errorCode types.ErrorCode) bool {
 	_, exists := alwaysSkipRetryCodes[errorCode]
 	return exists
+}
+
+func ChannelHealthErrorStatusCodesToString() string {
+	return statusCodeRangesToString(ChannelHealthErrorStatusCodeRanges)
+}
+
+func ChannelHealthErrorStatusCodesFromString(s string) error {
+	ranges, err := ParseHTTPStatusCodeRanges(s)
+	if err != nil {
+		return err
+	}
+	ChannelHealthErrorStatusCodeRanges = ranges
+	return nil
+}
+
+func ShouldCountChannelHealthErrorStatusCode(code int) bool {
+	return shouldMatchStatusCodeRanges(ChannelHealthErrorStatusCodeRanges, code)
 }
 
 func ShouldRetryByStatusCode(code int) bool {

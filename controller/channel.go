@@ -92,6 +92,28 @@ func buildChannelListQuery(group string, statusFilter int, typeFilter int) *gorm
 	return query
 }
 
+func channelHealthMap(channels []*model.Channel) map[string]service.ChannelHealthSnapshot {
+	ids := make([]int, 0, len(channels))
+	for _, channel := range channels {
+		if channel == nil || channel.Id <= 0 {
+			continue
+		}
+		ids = append(ids, channel.Id)
+	}
+	stats := service.GetChannelHealthStats(ids)
+	for _, channel := range channels {
+		if channel == nil || channel.Id <= 0 {
+			continue
+		}
+		snap, ok := stats[strconv.Itoa(channel.Id)]
+		if !ok {
+			continue
+		}
+		service.MaybeAlertChannelHealth(channel.Id, channel.Name, snap)
+	}
+	return stats
+}
+
 func GetChannelOps(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{
 		"retry_times": common.RetryTimes,
@@ -190,6 +212,7 @@ func GetAllChannels(c *gin.Context) {
 		"page":        pageInfo.GetPage(),
 		"page_size":   pageInfo.GetPageSize(),
 		"type_counts": typeCounts,
+		"health":      channelHealthMap(channelData),
 	})
 	return
 }
@@ -390,6 +413,7 @@ func SearchChannels(c *gin.Context) {
 			"items":       pagedData,
 			"total":       total,
 			"type_counts": typeCounts,
+			"health":      channelHealthMap(pagedData),
 		},
 	})
 	return

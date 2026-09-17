@@ -27,7 +27,12 @@ import {
   RESPONSE_TIME_THRESHOLDS,
   TYPE_TO_KEY_PROMPT,
 } from '../constants'
-import type { Channel, ChannelSettings, ChannelOtherSettings } from '../types'
+import type {
+  Channel,
+  ChannelHealth,
+  ChannelSettings,
+  ChannelOtherSettings,
+} from '../types'
 
 // ============================================================================
 // Channel Type Utilities
@@ -715,9 +720,55 @@ export function aggregateChannelsByTag(
     } else if (tagRow.status === undefined) {
       tagRow.status = channel.status
     }
+
+    tagRow.health = mergeChannelHealth(tagRow.health, channel.health)
   }
 
   return result
+}
+
+export function attachChannelHealth<
+  T extends { data?: { items?: Channel[]; health?: Record<string, ChannelHealth> } },
+>(response: T): T {
+  const items = response.data?.items
+  const health = response.data?.health
+  if (!items || !health) {
+    return response
+  }
+  return {
+    ...response,
+    data: {
+      ...response.data,
+      items: items.map((channel) => ({
+        ...channel,
+        health: health[String(channel.id)] ?? channel.health,
+      })),
+    },
+  }
+}
+
+export function mergeChannelHealth(
+  current: ChannelHealth | undefined,
+  next: ChannelHealth | undefined
+): ChannelHealth | undefined {
+  if (!current) return next
+  if (!next) return current
+  const total = current.total + next.total
+  const success = current.success + next.success
+  const bad = current.bad + next.bad
+  const minTotal = current.min_total || next.min_total || 30
+  const alertBelow = current.alert_below || next.alert_below || 0.5
+  return {
+    window_seconds: current.window_seconds || next.window_seconds,
+    total,
+    success,
+    bad,
+    success_rate: total > 0 ? success / total : 0,
+    error_rate: total > 0 ? bad / total : 0,
+    min_total: minTotal,
+    alert_below: alertBelow,
+    sample_ready: total >= minTotal,
+  }
 }
 
 // ============================================================================

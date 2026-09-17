@@ -34,6 +34,20 @@ export const channelInfoSchema = z.object({
 
 export type ChannelInfo = z.infer<typeof channelInfoSchema>
 
+export const channelHealthSchema = z.object({
+  window_seconds: z.number(),
+  total: z.number(),
+  success: z.number(),
+  bad: z.number(),
+  success_rate: z.number(),
+  error_rate: z.number(),
+  min_total: z.number().default(30),
+  alert_below: z.number().default(0.5),
+  sample_ready: z.boolean(),
+})
+
+export type ChannelHealth = z.infer<typeof channelHealthSchema>
+
 export const channelSchema = z.object({
   id: z.number(),
   type: z.number(),
@@ -75,6 +89,7 @@ export const channelSchema = z.object({
     multi_key_mode: 'random',
   }),
   settings: z.string().default('{}'), // other_settings JSON
+  health: channelHealthSchema.optional(),
 })
 
 export type Channel = z.infer<typeof channelSchema>
@@ -158,6 +173,7 @@ export interface GetChannelsResponse {
     page: number
     page_size: number
     type_counts?: Record<string, number>
+    health?: Record<string, ChannelHealth>
   }
 }
 
@@ -168,6 +184,7 @@ export interface SearchChannelsResponse {
     items: Channel[]
     total: number
     type_counts?: Record<string, number>
+    health?: Record<string, ChannelHealth>
   }
 }
 

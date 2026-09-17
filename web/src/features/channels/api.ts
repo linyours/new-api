@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { getGroups as getUserGroups } from '@/features/users/api'
 import { api, type ApiRequestConfig } from '@/lib/api'
 
+import { attachChannelHealth } from './lib/channel-utils'
 import type {
   AddChannelRequest,
   BatchDeleteParams,
@@ -86,7 +87,7 @@ export async function getChannels(
   params: GetChannelsParams = {}
 ): Promise<GetChannelsResponse> {
   const res = await api.get('/api/channel', { params })
-  return res.data
+  return attachChannelHealth(res.data)
 }
 
 /**
@@ -96,7 +97,7 @@ export async function searchChannels(
   params: SearchChannelsParams
 ): Promise<SearchChannelsResponse> {
   const res = await api.get('/api/channel/search', { params })
-  return res.data
+  return attachChannelHealth(res.data)
 }
 
 /**

@@ -49,6 +49,29 @@ func createErrorLog(log *Log) error {
 	return LOG_DB.Table(errorLogsTable).Create(log).Error
 }
 
+func GetRecentErrorLogsByChannel(channelID int, since int64, limit int) ([]*Log, error) {
+	if channelID <= 0 || limit <= 0 {
+		return nil, nil
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	if LOG_DB == nil {
+		return nil, nil
+	}
+	tx := newLogListTx(LogTypeError).Where("logs.channel_id = ?", channelID)
+	if since > 0 {
+		tx = tx.Where("logs.created_at >= ?", since)
+	}
+	order := "logs.created_at desc, logs.id desc"
+	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+		order = clickHouseLogOrder("logs.")
+	}
+	var logs []*Log
+	err := tx.Order(order).Limit(limit).Find(&logs).Error
+	return logs, err
+}
+
 func logRecordsTable(logType int) string {
 	if logType == LogTypeError {
 		return errorLogsTable

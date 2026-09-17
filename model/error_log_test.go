@@ -67,6 +67,51 @@ func TestErrorLogsAreIsolatedFromUsageLogs(t *testing.T) {
 	require.Len(t, tokenLogs, 2)
 }
 
+func TestGetRecentErrorLogsByChannel(t *testing.T) {
+	truncateTables(t)
+	now := time.Now().Unix()
+	require.NoError(t, createErrorLog(&Log{
+		Type:      LogTypeError,
+		Content:   "old",
+		CreatedAt: now - 3600,
+		ChannelId: 24,
+		RequestId: "old-24",
+	}))
+	require.NoError(t, createErrorLog(&Log{
+		Type:      LogTypeError,
+		Content:   "other-channel",
+		CreatedAt: now,
+		ChannelId: 7,
+		RequestId: "other",
+	}))
+	require.NoError(t, createErrorLog(&Log{
+		Type:      LogTypeError,
+		Content:   "new-a",
+		CreatedAt: now - 10,
+		ChannelId: 24,
+		ModelName: "gpt-4",
+		RequestId: "new-a",
+	}))
+	require.NoError(t, createErrorLog(&Log{
+		Type:      LogTypeError,
+		Content:   "new-b",
+		CreatedAt: now,
+		ChannelId: 24,
+		ModelName: "gpt-4",
+		RequestId: "new-b",
+	}))
+
+	logs, err := GetRecentErrorLogsByChannel(24, now-60, 5)
+	require.NoError(t, err)
+	require.Len(t, logs, 2)
+	assert.Equal(t, "new-b", logs[0].Content)
+	assert.Equal(t, "new-a", logs[1].Content)
+
+	empty, err := GetRecentErrorLogsByChannel(0, now-60, 5)
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+}
+
 func TestTruncateErrorLogsDoesNotTouchUsageLogs(t *testing.T) {
 	truncateTables(t)
 	now := time.Now().Unix()

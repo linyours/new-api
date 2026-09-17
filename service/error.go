@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -227,4 +228,38 @@ func TaskErrorFromAPIError(apiErr *types.NewAPIError) *taskdto.TaskError {
 		StatusCode: apiErr.StatusCode,
 		Error:      apiErr.Err,
 	}
+}
+
+func IsTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "client.timeout exceeded") ||
+		strings.Contains(msg, "timeout awaiting response") ||
+		strings.Contains(msg, "tls handshake timeout")
+}
+
+func IsRelayTimeoutError(apiErr *types.NewAPIError) bool {
+	if apiErr == nil {
+		return false
+	}
+	if apiErr.StatusCode == http.StatusRequestTimeout ||
+		apiErr.StatusCode == http.StatusGatewayTimeout ||
+		apiErr.StatusCode == 524 {
+		return true
+	}
+	if apiErr.GetErrorCode() == types.ErrorCodeChannelResponseTimeExceeded {
+		return true
+	}
+	return IsTimeoutError(apiErr)
 }

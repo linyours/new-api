@@ -246,6 +246,7 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	}
 
 	info.IsChannelTest = true
+	common.SetContextKey(c, constant.ContextKeyIsChannelTest, true)
 	info.InitChannelMeta(c)
 
 	err = attachTestBillingRequestInput(info, request)

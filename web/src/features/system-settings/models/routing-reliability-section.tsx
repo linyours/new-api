@@ -63,6 +63,17 @@ const numericString = z.string().refine((value) => {
   return !Number.isNaN(Number(trimmed)) && Number(trimmed) >= 0
 }, 'Enter a non-negative number or leave empty')
 
+const optionalHttpUrl = z.string().refine((value) => {
+  const trimmed = value.trim()
+  if (!trimmed) return true
+  try {
+    const parsed = new URL(trimmed)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}, 'Enter a valid http(s) URL or leave empty')
+
 const channelTestModes = ['scheduled_all', 'passive_recovery'] as const
 type ChannelTestMode = (typeof channelTestModes)[number]
 
@@ -75,6 +86,19 @@ const routingReliabilitySchema = z
     AutomaticDisableKeywords: z.string(),
     AutomaticDisableStatusCodes: z.string(),
     AutomaticRetryStatusCodes: z.string(),
+    ChannelHealthErrorStatusCodes: z.string(),
+    ChannelHealthMinTotal: z.coerce
+      .number()
+      .int()
+      .min(1, 'Minimum sample size must be at least 1')
+      .max(1000, 'Minimum sample size must be at most 1000'),
+    ChannelHealthAlertBelowPercent: z.coerce
+      .number()
+      .int()
+      .min(1, 'Alert below success rate must be at least 1')
+      .max(100, 'Alert below success rate must be at most 100'),
+    ChannelHealthWebhookUrl: optionalHttpUrl,
+    ChannelHealthWebhookSecret: z.string(),
     monitor_setting: z.object({
       auto_test_channel_enabled: z.boolean(),
       auto_test_channel_minutes: z.coerce
@@ -110,6 +134,19 @@ const routingReliabilitySchema = z
         )}`,
       })
     }
+
+    const healthParsed = parseHttpStatusCodeRules(
+      values.ChannelHealthErrorStatusCodes
+    )
+    if (!healthParsed.ok) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ChannelHealthErrorStatusCodes'],
+        message: `Invalid status code rules: ${healthParsed.invalidTokens.join(
+          ', '
+        )}`,
+      })
+    }
   })
 
 type RoutingReliabilityFormValues = z.output<typeof routingReliabilitySchema>
@@ -124,6 +161,11 @@ type RoutingReliabilitySectionProps = {
     AutomaticDisableKeywords: string
     AutomaticDisableStatusCodes: string
     AutomaticRetryStatusCodes: string
+    ChannelHealthErrorStatusCodes: string
+    ChannelHealthMinTotal: number
+    ChannelHealthAlertBelowPercent: number
+    ChannelHealthWebhookUrl: string
+    ChannelHealthWebhookSecret: string
     'monitor_setting.auto_test_channel_enabled': boolean
     'monitor_setting.auto_test_channel_minutes': number
     'monitor_setting.channel_test_mode': ChannelTestMode
@@ -142,6 +184,10 @@ type NormalizedRoutingReliabilityValues = {
   AutomaticDisableKeywords: string
   AutomaticDisableStatusCodes: string
   AutomaticRetryStatusCodes: string
+  ChannelHealthErrorStatusCodes: string
+  ChannelHealthMinTotal: number
+  ChannelHealthAlertBelowPercent: number
+  ChannelHealthWebhookUrl: string
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_mode': ChannelTestMode
@@ -163,6 +209,12 @@ const buildFormDefaults = (
   ),
   AutomaticDisableStatusCodes: defaults.AutomaticDisableStatusCodes ?? '',
   AutomaticRetryStatusCodes: defaults.AutomaticRetryStatusCodes ?? '',
+  ChannelHealthErrorStatusCodes: defaults.ChannelHealthErrorStatusCodes ?? '',
+  ChannelHealthMinTotal: defaults.ChannelHealthMinTotal ?? 30,
+  ChannelHealthAlertBelowPercent:
+    defaults.ChannelHealthAlertBelowPercent ?? 50,
+  ChannelHealthWebhookUrl: defaults.ChannelHealthWebhookUrl ?? '',
+  ChannelHealthWebhookSecret: defaults.ChannelHealthWebhookSecret ?? '',
   monitor_setting: {
     auto_test_channel_enabled:
       defaults['monitor_setting.auto_test_channel_enabled'],
@@ -190,6 +242,13 @@ const normalizeDefaults = (
   AutomaticRetryStatusCodes: parseHttpStatusCodeRules(
     defaults.AutomaticRetryStatusCodes ?? ''
   ).normalized,
+  ChannelHealthErrorStatusCodes: parseHttpStatusCodeRules(
+    defaults.ChannelHealthErrorStatusCodes ?? ''
+  ).normalized,
+  ChannelHealthMinTotal: defaults.ChannelHealthMinTotal ?? 30,
+  ChannelHealthAlertBelowPercent:
+    defaults.ChannelHealthAlertBelowPercent ?? 50,
+  ChannelHealthWebhookUrl: (defaults.ChannelHealthWebhookUrl ?? '').trim(),
   'monitor_setting.auto_test_channel_enabled':
     defaults['monitor_setting.auto_test_channel_enabled'],
   'monitor_setting.auto_test_channel_minutes':
@@ -215,6 +274,12 @@ const normalizeFormValues = (
   AutomaticRetryStatusCodes: parseHttpStatusCodeRules(
     values.AutomaticRetryStatusCodes
   ).normalized,
+  ChannelHealthErrorStatusCodes: parseHttpStatusCodeRules(
+    values.ChannelHealthErrorStatusCodes
+  ).normalized,
+  ChannelHealthMinTotal: values.ChannelHealthMinTotal,
+  ChannelHealthAlertBelowPercent: values.ChannelHealthAlertBelowPercent,
+  ChannelHealthWebhookUrl: values.ChannelHealthWebhookUrl.trim(),
   'monitor_setting.auto_test_channel_enabled':
     values.monitor_setting.auto_test_channel_enabled,
   'monitor_setting.auto_test_channel_minutes':
@@ -249,6 +314,7 @@ export function RoutingReliabilitySection({
 
   const autoDisableStatusCodes = form.watch('AutomaticDisableStatusCodes')
   const autoRetryStatusCodes = form.watch('AutomaticRetryStatusCodes')
+  const healthErrorStatusCodes = form.watch('ChannelHealthErrorStatusCodes')
   const channelTestMode = form.watch('monitor_setting.channel_test_mode')
   const autoDisableParsed = useMemo(
     () => parseHttpStatusCodeRules(autoDisableStatusCodes),
@@ -258,14 +324,19 @@ export function RoutingReliabilitySection({
     () => parseHttpStatusCodeRules(autoRetryStatusCodes),
     [autoRetryStatusCodes]
   )
+  const healthErrorParsed = useMemo(
+    () => parseHttpStatusCodeRules(healthErrorStatusCodes),
+    [healthErrorStatusCodes]
+  )
 
   const onSubmit = async (values: RoutingReliabilityFormValues) => {
     const normalized = normalizeFormValues(values)
     const updates = (
       Object.keys(normalized) as Array<keyof NormalizedRoutingReliabilityValues>
     ).filter((key) => normalized[key] !== baselineRef.current[key])
+    const webhookSecret = values.ChannelHealthWebhookSecret.trim()
 
-    if (updates.length === 0) {
+    if (updates.length === 0 && !webhookSecret) {
       toast.info(t('No changes to save'))
       return
     }
@@ -276,6 +347,14 @@ export function RoutingReliabilitySection({
         key,
         value,
       })
+    }
+
+    if (webhookSecret) {
+      await updateOption.mutateAsync({
+        key: 'ChannelHealthWebhookSecret',
+        value: webhookSecret,
+      })
+      form.setValue('ChannelHealthWebhookSecret', '')
     }
 
     baselineRef.current = normalized
@@ -473,6 +552,140 @@ export function RoutingReliabilitySection({
                       />
                     </FormControl>
                   </SettingsSwitchItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='ChannelHealthMinTotal'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Minimum sample size')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        min={1}
+                        max={1000}
+                        step={1}
+                        {...safeNumberFieldProps(field)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Requests in the last 5 minutes required before showing a success rate or sending an alert. Default 30.'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='ChannelHealthAlertBelowPercent'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Alert below success rate')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        min={1}
+                        max={100}
+                        step={1}
+                        {...safeNumberFieldProps(field)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Alert when the 5-minute success rate is below this percent. Default 50.'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='ChannelHealthErrorStatusCodes'
+                render={({ field }) => (
+                  <FormItem className='lg:col-span-2'>
+                    <FormLabel>
+                      {t('Success-rate error status codes')}
+                    </FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder={t('e.g. 401-428, 430-599')}
+                        value={field.value}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Timeouts always count. Listed codes also count as channel errors; 400 and 429 are excluded by default.'
+                      )}{' '}
+                      {t(
+                        'Accepts comma-separated status codes and inclusive ranges.'
+                      )}{' '}
+                      {healthErrorParsed.ok &&
+                        healthErrorParsed.normalized &&
+                        healthErrorParsed.normalized !== field.value.trim() && (
+                          <span className='text-muted-foreground'>
+                            {t('Normalized:')} {healthErrorParsed.normalized}
+                          </span>
+                        )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='ChannelHealthWebhookUrl'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Channel health webhook')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='url'
+                        placeholder={t('https://example.com/webhook')}
+                        value={field.value}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Posted when a channel error rate exceeds the 5-minute alert threshold. Independent of personal notification settings.'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='ChannelHealthWebhookSecret'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Webhook secret')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='password'
+                        autoComplete='new-password'
+                        placeholder={t('Leave blank unless updating')}
+                        value={field.value}
+                        onChange={(event) => field.onChange(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Webhook signing secret (leave blank unless updating)'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
                 )}
               />
             </div>

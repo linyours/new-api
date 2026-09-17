@@ -85,6 +85,12 @@ const MODELS_SECTIONS = [
           AutomaticDisableKeywords: settings.AutomaticDisableKeywords,
           AutomaticDisableStatusCodes: settings.AutomaticDisableStatusCodes,
           AutomaticRetryStatusCodes: settings.AutomaticRetryStatusCodes,
+          ChannelHealthErrorStatusCodes: settings.ChannelHealthErrorStatusCodes,
+          ChannelHealthMinTotal: settings.ChannelHealthMinTotal,
+          ChannelHealthAlertBelowPercent:
+            settings.ChannelHealthAlertBelowPercent,
+          ChannelHealthWebhookUrl: settings.ChannelHealthWebhookUrl,
+          ChannelHealthWebhookSecret: settings.ChannelHealthWebhookSecret ?? '',
           'monitor_setting.auto_test_channel_enabled':
             settings['monitor_setting.auto_test_channel_enabled'],
           'monitor_setting.auto_test_channel_minutes':

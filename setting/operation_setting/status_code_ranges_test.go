@@ -51,6 +51,28 @@ func TestShouldDisableByStatusCode(t *testing.T) {
 	require.False(t, ShouldDisableByStatusCode(200))
 }
 
+func TestShouldCountChannelHealthErrorStatusCode_DefaultExcludes400And429(t *testing.T) {
+	require.False(t, ShouldCountChannelHealthErrorStatusCode(400))
+	require.False(t, ShouldCountChannelHealthErrorStatusCode(429))
+	require.True(t, ShouldCountChannelHealthErrorStatusCode(401))
+	require.True(t, ShouldCountChannelHealthErrorStatusCode(428))
+	require.True(t, ShouldCountChannelHealthErrorStatusCode(430))
+	require.True(t, ShouldCountChannelHealthErrorStatusCode(500))
+	require.True(t, ShouldCountChannelHealthErrorStatusCode(504))
+	require.False(t, ShouldCountChannelHealthErrorStatusCode(200))
+}
+
+func TestShouldCountChannelHealthErrorStatusCode_Configurable(t *testing.T) {
+	orig := ChannelHealthErrorStatusCodeRanges
+	t.Cleanup(func() { ChannelHealthErrorStatusCodeRanges = orig })
+
+	require.NoError(t, ChannelHealthErrorStatusCodesFromString("429,500-599"))
+	require.True(t, ShouldCountChannelHealthErrorStatusCode(429))
+	require.True(t, ShouldCountChannelHealthErrorStatusCode(500))
+	require.False(t, ShouldCountChannelHealthErrorStatusCode(401))
+	require.False(t, ShouldCountChannelHealthErrorStatusCode(400))
+}
+
 func TestShouldRetryByStatusCode(t *testing.T) {
 	orig := AutomaticRetryStatusCodeRanges
 	t.Cleanup(func() { AutomaticRetryStatusCodeRanges = orig })
@@ -81,6 +103,7 @@ func TestShouldRetryByStatusCode_DefaultMatchesLegacyBehavior(t *testing.T) {
 }
 
 func TestIsAlwaysSkipRetryStatusCode(t *testing.T) {
+	require.True(t, IsAlwaysSkipRetryStatusCode(408))
 	require.True(t, IsAlwaysSkipRetryStatusCode(504))
 	require.True(t, IsAlwaysSkipRetryStatusCode(524))
 	require.False(t, IsAlwaysSkipRetryStatusCode(500))

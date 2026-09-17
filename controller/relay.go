@@ -276,6 +276,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if newAPIError == nil {
 			relayInfo.LastError = nil
+			service.ObserveChannelHealthSuccess(channel.Id, channel.Name)
 			return
 		}
 		service.ReleaseChannelKeyQuotaReservation(relayInfo)
@@ -379,6 +380,9 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return false
 	}
+	if service.IsRelayTimeoutError(openaiErr) {
+		return false
+	}
 	if types.IsChannelError(openaiErr) {
 		return true
 	}
@@ -412,6 +416,10 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		gopool.Go(func() {
 			service.DisableChannel(channelError, err.ErrorWithStatusCode())
 		})
+	}
+
+	if !common.GetContextKeyBool(c, constant.ContextKeyIsChannelTest) {
+		service.ObserveChannelHealthFromError(channelError.ChannelId, channelError.ChannelName, err)
 	}
 
 	if constant.ErrorLogEnabled && types.IsRecordErrorLog(err) {
@@ -605,6 +613,7 @@ func RelayTask(c *gin.Context) {
 
 		result, taskErr = relay.RelayTaskSubmit(c, relayInfo)
 		if taskErr == nil {
+			service.ObserveChannelHealthSuccess(channel.Id, channel.Name)
 			break
 		}
 		service.ReleaseChannelKeyQuotaReservation(relayInfo)
@@ -704,18 +713,16 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 	if taskErr.StatusCode == 307 {
 		return true
 	}
+	if taskErr.StatusCode == http.StatusRequestTimeout ||
+		operation_setting.IsAlwaysSkipRetryStatusCode(taskErr.StatusCode) ||
+		service.IsTimeoutError(taskErr.Error) ||
+		(taskErr.Error == nil && service.IsTimeoutError(errors.New(taskErr.Message))) {
+		return false
+	}
 	if taskErr.StatusCode/100 == 5 {
-		// 超时不重试
-		if operation_setting.IsAlwaysSkipRetryStatusCode(taskErr.StatusCode) {
-			return false
-		}
 		return true
 	}
 	if taskErr.StatusCode == http.StatusBadRequest {
-		return false
-	}
-	if taskErr.StatusCode == 408 {
-		// azure处理超时不重试
 		return false
 	}
 	if taskErr.LocalError {

@@ -517,7 +517,11 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.LogError(c, "do request failed: "+err.Error())
-		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
+		ops := []types.NewAPIErrorOptions{types.ErrOptionWithHideErrMsg("upstream error: do request failed")}
+		if service.IsTimeoutError(err) {
+			ops = append(ops, types.ErrOptionWithSkipRetry(), types.ErrOptionWithStatusCode(http.StatusGatewayTimeout))
+		}
+		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, ops...)
 	}
 	if resp == nil {
 		return nil, errors.New("resp is nil")

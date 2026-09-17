@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -19,6 +20,7 @@ type WebhookPayload struct {
 	Type      string        `json:"type"`
 	Title     string        `json:"title"`
 	Content   string        `json:"content"`
+	Text      string        `json:"text,omitempty"`
 	Values    []interface{} `json:"values,omitempty"`
 	Timestamp int64         `json:"timestamp"`
 }
@@ -43,12 +45,12 @@ func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error 
 		Type:      data.Type,
 		Title:     data.Title,
 		Content:   content,
+		Text:      strings.TrimSpace(data.Title + "\n" + content),
 		Values:    data.Values,
 		Timestamp: time.Now().Unix(),
 	}
 
-	// 序列化负载
-	payloadBytes, err := common.Marshal(payload)
+	payloadBytes, err := marshalWebhookPayload(webhookURL, payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal webhook payload: %v", err)
 	}
@@ -121,4 +123,89 @@ func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error 
 	}
 
 	return nil
+}
+
+func marshalWebhookPayload(webhookURL string, payload WebhookPayload) ([]byte, error) {
+	text := payload.Text
+	if text == "" {
+		text = strings.TrimSpace(payload.Title + "\n" + payload.Content)
+	}
+	switch webhookPlatform(webhookURL) {
+	case "feishu":
+		return marshalFeishuCard(payload)
+	case "dingtalk":
+		return common.Marshal(map[string]any{
+			"msgtype": "markdown",
+			"markdown": map[string]string{
+				"title": payload.Title,
+				"text":  strings.TrimSpace("### " + payload.Title + "\n\n" + payload.Content),
+			},
+		})
+	case "wecom":
+		return common.Marshal(map[string]any{
+			"msgtype": "markdown",
+			"markdown": map[string]string{
+				"content": strings.TrimSpace("**" + payload.Title + "**\n" + payload.Content),
+			},
+		})
+	case "discord", "slack":
+		return common.Marshal(map[string]any{
+			"content": text,
+			"text":    text,
+		})
+	default:
+		return common.Marshal(payload)
+	}
+}
+
+func marshalFeishuCard(payload WebhookPayload) ([]byte, error) {
+	headerTitle := payload.Title
+	template := "blue"
+	if strings.HasPrefix(payload.Type, dto.NotifyTypeChannelHealth) {
+		headerTitle = "渠道成功率过低"
+		template = "red"
+	}
+	md := strings.TrimSpace(payload.Content)
+	if md == "" {
+		md = payload.Text
+	}
+	return common.Marshal(map[string]any{
+		"msg_type": "interactive",
+		"card": map[string]any{
+			"header": map[string]any{
+				"template": template,
+				"title": map[string]any{
+					"tag":     "plain_text",
+					"content": headerTitle,
+				},
+			},
+			"elements": []any{
+				map[string]any{
+					"tag": "div",
+					"text": map[string]any{
+						"tag":     "lark_md",
+						"content": md,
+					},
+				},
+			},
+		},
+	})
+}
+
+func webhookPlatform(raw string) string {
+	u := strings.ToLower(raw)
+	switch {
+	case strings.Contains(u, "feishu") || strings.Contains(u, "larksuite") || strings.Contains(u, "larkoffice") || strings.Contains(u, ".lark.cn"):
+		return "feishu"
+	case strings.Contains(u, "dingtalk"):
+		return "dingtalk"
+	case strings.Contains(u, "qyapi.weixin.qq.com"):
+		return "wecom"
+	case strings.Contains(u, "discord.com/api/webhooks"):
+		return "discord"
+	case strings.Contains(u, "hooks.slack.com"):
+		return "slack"
+	default:
+		return ""
+	}
 }
