@@ -31,6 +31,8 @@ import {
   batchUpdateChannelStatus,
   batchDeleteChannels,
   batchSetChannelTag,
+  batchAddChannelModels,
+  batchAddChannelModelRpmLimits,
   enableTagChannels,
   disableTagChannels,
   deleteDisabledChannels,
@@ -55,6 +57,8 @@ export const channelsQueryKeys = {
   details: () => [...channelsQueryKeys.all, 'detail'] as const,
   detail: (id: number) => [...channelsQueryKeys.details(), id] as const,
   templates: () => [...channelsQueryKeys.all, 'templates'] as const,
+  recentErrors: (id: number) =>
+    [...channelsQueryKeys.all, 'recent-errors', id] as const,
 }
 
 function getChannelTestResponseTime(
@@ -511,6 +515,97 @@ export async function handleBatchDisable(
     }
   } catch {
     toast.error(i18next.t('Failed to disable channels'))
+  }
+}
+
+/**
+ * Batch append models to selected channels
+ */
+export async function handleBatchAddModels(
+  ids: number[],
+  models: string[],
+  queryClient?: QueryClient,
+  onSuccess?: () => void
+): Promise<void> {
+  if (ids.length === 0) {
+    toast.error(i18next.t('No channels selected'))
+    return
+  }
+  if (models.length === 0) {
+    toast.error(i18next.t('No models entered'))
+    return
+  }
+
+  try {
+    const response = await batchAddChannelModels({ ids, models })
+    if (response.success) {
+      const updatedCount = response.data || 0
+      if (updatedCount === 0) {
+        toast.success(
+          i18next.t('Selected channels already include these models')
+        )
+      } else {
+        toast.success(
+          i18next.t('Added models to {{count}} channel(s)', {
+            count: updatedCount,
+          })
+        )
+      }
+      queryClient?.invalidateQueries({ queryKey: channelsQueryKeys.lists() })
+      onSuccess?.()
+    } else {
+      toast.error(response.message || i18next.t('Failed to add models'))
+    }
+  } catch {
+    toast.error(i18next.t('Failed to add models'))
+  }
+}
+
+/**
+ * Batch merge model RPM limits onto selected channels
+ */
+export async function handleBatchAddModelRpmLimits(
+  ids: number[],
+  modelRpmLimits: Record<string, number>,
+  queryClient?: QueryClient,
+  onSuccess?: () => void
+): Promise<void> {
+  if (ids.length === 0) {
+    toast.error(i18next.t('No channels selected'))
+    return
+  }
+  if (Object.keys(modelRpmLimits).length === 0) {
+    toast.error(i18next.t('No model RPM limits entered'))
+    return
+  }
+
+  try {
+    const response = await batchAddChannelModelRpmLimits({
+      ids,
+      model_rpm_limits: modelRpmLimits,
+    })
+    if (response.success) {
+      const updatedCount = response.data || 0
+      if (updatedCount === 0) {
+        toast.success(
+          i18next.t('Selected channels already have these RPM limits')
+        )
+      } else {
+        toast.success(
+          i18next.t('Updated model RPM limits on {{count}} channel(s)', {
+            count: updatedCount,
+          })
+        )
+      }
+      queryClient?.invalidateQueries({ queryKey: channelsQueryKeys.lists() })
+      onSuccess?.()
+    } else {
+      toast.error(
+        response.message || i18next.t('Failed to add model RPM limits')
+      )
+    }
+  } catch {
+    toast.error(i18next.t('Failed to add model RPM limits'))
   }
 }
 

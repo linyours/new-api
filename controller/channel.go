@@ -110,6 +110,7 @@ func channelHealthMap(channels []*model.Channel) map[string]service.ChannelHealt
 			continue
 		}
 		service.MaybeAlertChannelHealth(channel.Id, channel.Name, snap)
+		service.MaybeDisableChannelByHealth(channel.Id, channel.Name, snap)
 	}
 	return stats
 }
@@ -1396,6 +1397,69 @@ func BatchSetChannelTag(c *gin.Context) {
 		"data":    len(channelBatch.Ids),
 	})
 	return
+}
+
+type ChannelBatchAddModelsRequest struct {
+	Ids    []int    `json:"ids"`
+	Models []string `json:"models"`
+}
+
+type ChannelBatchAddModelRpmLimitsRequest struct {
+	Ids            []int                          `json:"ids"`
+	ModelRpmLimits model.ChannelKeyModelRpmLimits `json:"model_rpm_limits"`
+}
+
+func BatchAddChannelModels(c *gin.Context) {
+	req := ChannelBatchAddModelsRequest{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "参数错误",
+		})
+		return
+	}
+	changed, err := model.BatchAddChannelModels(req.Ids, req.Models)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if changed > 0 {
+		model.InitChannelCache()
+	}
+	recordManageAudit(c, "channel.models_batch_add", map[string]interface{}{
+		"count": changed,
+		"total": len(req.Ids),
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    changed,
+	})
+}
+
+func BatchAddChannelModelRpmLimits(c *gin.Context) {
+	req := ChannelBatchAddModelRpmLimitsRequest{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "参数错误",
+		})
+		return
+	}
+	changed, err := model.BatchMergeChannelKeyModelRpmLimits(req.Ids, req.ModelRpmLimits)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "channel.model_rpm_limits_batch_add", map[string]interface{}{
+		"count": changed,
+		"total": len(req.Ids),
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    changed,
+	})
 }
 
 func GetTagModels(c *gin.Context) {

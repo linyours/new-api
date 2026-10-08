@@ -78,6 +78,7 @@ import {
 import { parseUpstreamUpdateMeta } from '../lib/upstream-update-utils'
 import type { Channel } from '../types'
 import { ChannelRowActionsLayoutContext } from './channel-row-actions-context'
+import { ChannelSuccessRateCell } from './channel-success-rate-cell'
 import { useChannels } from './channels-provider'
 import { DataTableRowActions } from './data-table-row-actions'
 import { DataTableTagRowActions } from './data-table-tag-row-actions'
@@ -1099,45 +1100,7 @@ export function useChannelsColumns(
       {
         id: 'success_rate',
         header: t('Success rate'),
-        cell: ({ row }) => {
-          const health = row.original.health
-          if (!health || !health.sample_ready) {
-            return (
-              <span className='text-muted-foreground text-xs'>--</span>
-            )
-          }
-          let variant: StatusBadgeProps['variant'] = 'success'
-          if (health.success_rate < health.alert_below) {
-            variant = 'danger'
-          } else if (health.success_rate < 0.8) {
-            variant = 'warning'
-          }
-          return (
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <StatusBadge
-                      label={`${Math.round(health.success_rate * 100)}%`}
-                      variant={variant}
-                      size='sm'
-                      copyable={false}
-                      className='-ml-1.5 cursor-pointer'
-                    />
-                  }
-                />
-                <TooltipContent side='top'>
-                  <p>
-                    {t('{{success}} / {{total}} in 5 minutes', {
-                      success: health.success,
-                      total: health.total,
-                    })}
-                  </p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          )
-        },
+        cell: ({ row }) => <ChannelSuccessRateCell channel={row.original} />,
         size: 110,
         enableSorting: false,
       },

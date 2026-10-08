@@ -1125,6 +1125,101 @@ func GetChannelsByIds(ids []int) ([]*Channel, error) {
 	return channels, err
 }
 
+func uniquePositiveIDs(ids []int) []int {
+	seen := make(map[int]struct{}, len(ids))
+	out := make([]int, 0, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func normalizeChannelModelNames(models []string) []string {
+	seen := make(map[string]struct{}, len(models))
+	out := make([]string, 0, len(models))
+	for _, modelName := range models {
+		modelName = strings.TrimSpace(modelName)
+		if modelName == "" {
+			continue
+		}
+		if _, ok := seen[modelName]; ok {
+			continue
+		}
+		seen[modelName] = struct{}{}
+		out = append(out, modelName)
+	}
+	return out
+}
+
+// BatchAddChannelModels appends models to the selected channels without
+// removing existing ones. Already-present names are skipped.
+func BatchAddChannelModels(ids []int, addModels []string) (int, error) {
+	ids = uniquePositiveIDs(ids)
+	addModels = normalizeChannelModelNames(addModels)
+	if len(ids) == 0 {
+		return 0, errors.New("no channels selected")
+	}
+	if len(addModels) == 0 {
+		return 0, errors.New("no models to add")
+	}
+
+	channels, err := GetChannelsByIds(ids)
+	if err != nil {
+		return 0, err
+	}
+
+	pending := make([]*Channel, 0, len(channels))
+	for _, channel := range channels {
+		current := normalizeChannelModelNames(channel.GetModels())
+		seen := make(map[string]struct{}, len(current)+len(addModels))
+		for _, modelName := range current {
+			seen[modelName] = struct{}{}
+		}
+		merged := append([]string{}, current...)
+		added := false
+		for _, modelName := range addModels {
+			if _, ok := seen[modelName]; ok {
+				continue
+			}
+			seen[modelName] = struct{}{}
+			merged = append(merged, modelName)
+			added = true
+		}
+		if !added {
+			continue
+		}
+		channel.Models = strings.Join(merged, ",")
+		pending = append(pending, channel)
+	}
+
+	if len(pending) == 0 {
+		return 0, nil
+	}
+
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		for _, channel := range pending {
+			if err := tx.Model(&Channel{}).Where("id = ?", channel.Id).Update("models", channel.Models).Error; err != nil {
+				return err
+			}
+			if err := channel.UpdateAbilities(tx); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(pending), nil
+}
+
 func BatchSetChannelTag(ids []int, tag *string) error {
 	// 开启事务
 	tx := DB.Begin()

@@ -728,7 +728,9 @@ export function aggregateChannelsByTag(
 }
 
 export function attachChannelHealth<
-  T extends { data?: { items?: Channel[]; health?: Record<string, ChannelHealth> } },
+  T extends {
+    data?: { items?: Channel[]; health?: Record<string, ChannelHealth> }
+  },
 >(response: T): T {
   const items = response.data?.items
   const health = response.data?.health
@@ -768,7 +770,46 @@ export function mergeChannelHealth(
     min_total: minTotal,
     alert_below: alertBelow,
     sample_ready: total >= minTotal,
+    layers: mergeChannelHealthLayers(current.layers, next.layers),
   }
+}
+
+function mergeChannelHealthLayers(
+  current: ChannelHealth['layers'],
+  next: ChannelHealth['layers']
+): ChannelHealth['layers'] {
+  if (!current?.length) return next
+  if (!next?.length) return current
+  const byMinutes = new Map<
+    number,
+    NonNullable<ChannelHealth['layers']>[number]
+  >()
+  for (const layer of current) {
+    byMinutes.set(layer.minutes, layer)
+  }
+  for (const layer of next) {
+    const existing = byMinutes.get(layer.minutes)
+    if (!existing) {
+      byMinutes.set(layer.minutes, layer)
+      continue
+    }
+    const total = existing.total + layer.total
+    const success = existing.success + layer.success
+    const bad = existing.bad + layer.bad
+    const minTotal = existing.min_total || layer.min_total || 30
+    byMinutes.set(layer.minutes, {
+      minutes: layer.minutes,
+      window_seconds: existing.window_seconds || layer.window_seconds,
+      total,
+      success,
+      bad,
+      success_rate: total > 0 ? success / total : 0,
+      error_rate: total > 0 ? bad / total : 0,
+      min_total: minTotal,
+      sample_ready: total >= minTotal,
+    })
+  }
+  return [...byMinutes.values()].sort((a, b) => a.minutes - b.minutes)
 }
 
 // ============================================================================

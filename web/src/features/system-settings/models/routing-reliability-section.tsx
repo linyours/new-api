@@ -211,8 +211,7 @@ const buildFormDefaults = (
   AutomaticRetryStatusCodes: defaults.AutomaticRetryStatusCodes ?? '',
   ChannelHealthErrorStatusCodes: defaults.ChannelHealthErrorStatusCodes ?? '',
   ChannelHealthMinTotal: defaults.ChannelHealthMinTotal ?? 30,
-  ChannelHealthAlertBelowPercent:
-    defaults.ChannelHealthAlertBelowPercent ?? 50,
+  ChannelHealthAlertBelowPercent: defaults.ChannelHealthAlertBelowPercent ?? 50,
   ChannelHealthWebhookUrl: defaults.ChannelHealthWebhookUrl ?? '',
   ChannelHealthWebhookSecret: defaults.ChannelHealthWebhookSecret ?? '',
   monitor_setting: {
@@ -246,8 +245,7 @@ const normalizeDefaults = (
     defaults.ChannelHealthErrorStatusCodes ?? ''
   ).normalized,
   ChannelHealthMinTotal: defaults.ChannelHealthMinTotal ?? 30,
-  ChannelHealthAlertBelowPercent:
-    defaults.ChannelHealthAlertBelowPercent ?? 50,
+  ChannelHealthAlertBelowPercent: defaults.ChannelHealthAlertBelowPercent ?? 50,
   ChannelHealthWebhookUrl: (defaults.ChannelHealthWebhookUrl ?? '').trim(),
   'monitor_setting.auto_test_channel_enabled':
     defaults['monitor_setting.auto_test_channel_enabled'],
@@ -572,7 +570,7 @@ export function RoutingReliabilitySection({
                     </FormControl>
                     <FormDescription>
                       {t(
-                        'Requests in the last 5 minutes required before showing a success rate or sending an alert. Default 30.'
+                        'Sample size for the 5-minute window. 1 / 15 / 30 / 60 minute windows scale from this value. Default 30.'
                       )}
                     </FormDescription>
                     <FormMessage />
@@ -706,7 +704,10 @@ export function RoutingReliabilitySection({
                     <SettingsSwitchContent>
                       <FormLabel>{t('Disable on failure')}</FormLabel>
                       <FormDescription>
-                        {t('Automatically disable channels when tests fail')}
+                        {t('Automatically disable channels when tests fail')}{' '}
+                        {t(
+                          'Also disable when the 5-minute success rate is 0% after enough classified errors.'
+                        )}
                       </FormDescription>
                     </SettingsSwitchContent>
                     <FormControl>

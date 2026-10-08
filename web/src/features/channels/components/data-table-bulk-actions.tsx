@@ -17,8 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQueryClient } from '@tanstack/react-query'
-import { type Table } from '@tanstack/react-table'
-import { Power, PowerOff, Tag, Trash2 } from 'lucide-react'
+import type { Table } from '@tanstack/react-table'
+import { Boxes, Gauge, Power, PowerOff, Tag, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -47,6 +47,8 @@ import {
   handleBatchSetTag,
 } from '../lib'
 import type { Channel } from '../types'
+import { BatchAddModelRpmLimitsDialog } from './dialogs/batch-add-model-rpm-limits-dialog'
+import { BatchAddModelsDialog } from './dialogs/batch-add-models-dialog'
 
 interface DataTableBulkActionsProps<TData> {
   table: Table<TData>
@@ -58,6 +60,8 @@ export function DataTableBulkActions<TData>({
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [showTagDialog, setShowTagDialog] = useState(false)
+  const [showModelsDialog, setShowModelsDialog] = useState(false)
+  const [showModelRpmDialog, setShowModelRpmDialog] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [tagValue, setTagValue] = useState('')
   const currentUser = useAuthStore((s) => s.auth.user)
@@ -178,6 +182,52 @@ export function DataTableBulkActions<TData>({
           <TooltipTrigger
             render={
               <Button
+                variant='outline'
+                size='icon'
+                onClick={() => setShowModelsDialog(true)}
+                className='size-8'
+                aria-label={t('Add models to selected channels')}
+                title={t('Add models to selected channels')}
+              />
+            }
+          >
+            <Boxes />
+            <span className='sr-only'>
+              {t('Add models to selected channels')}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p>{t('Add models to selected channels')}</p>
+          </TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant='outline'
+                size='icon'
+                onClick={() => setShowModelRpmDialog(true)}
+                className='size-8'
+                aria-label={t('Add model RPM limits to selected channels')}
+                title={t('Add model RPM limits to selected channels')}
+              />
+            }
+          >
+            <Gauge />
+            <span className='sr-only'>
+              {t('Add model RPM limits to selected channels')}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p>{t('Add model RPM limits to selected channels')}</p>
+          </TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
                 variant='destructive'
                 size='icon'
                 onClick={() => {
@@ -252,6 +302,20 @@ export function DataTableBulkActions<TData>({
           </div>
         </div>
       </Dialog>
+
+      <BatchAddModelsDialog
+        open={showModelsDialog}
+        onOpenChange={setShowModelsDialog}
+        selectedIds={selectedIds}
+        onSuccess={handleClearSelection}
+      />
+
+      <BatchAddModelRpmLimitsDialog
+        open={showModelRpmDialog}
+        onOpenChange={setShowModelRpmDialog}
+        selectedIds={selectedIds}
+        onSuccess={handleClearSelection}
+      />
 
       {/* Delete Confirmation Dialog */}
       <Dialog

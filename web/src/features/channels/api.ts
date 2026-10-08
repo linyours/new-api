@@ -22,6 +22,8 @@ import { api, type ApiRequestConfig } from '@/lib/api'
 import { attachChannelHealth } from './lib/channel-utils'
 import type {
   AddChannelRequest,
+  BatchAddModelRpmLimitsParams,
+  BatchAddModelsParams,
   BatchDeleteParams,
   BatchSetTagParams,
   Channel,
@@ -32,6 +34,7 @@ import type {
   CopyChannelResponse,
   FetchModelsResponse,
   GetChannelResponse,
+  GetChannelRecentErrorsResponse,
   GetChannelsParams,
   GetChannelsResponse,
   MultiKeyManageParams,
@@ -105,6 +108,19 @@ export async function searchChannels(
  */
 export async function getChannel(id: number): Promise<GetChannelResponse> {
   const res = await api.get(`/api/channel/${id}`)
+  return res.data
+}
+
+/**
+ * Latest error-log previews for a channel's health window (admin popup).
+ */
+export async function getChannelRecentErrors(
+  id: number
+): Promise<GetChannelRecentErrorsResponse> {
+  const res = await api.get(
+    `/api/channel/${id}/recent_errors`,
+    channelActionConfig()
+  )
   return res.data
 }
 
@@ -200,6 +216,35 @@ export async function batchSetChannelTag(
 ): Promise<{ success: boolean; message?: string; data?: number }> {
   const res = await api.post(
     '/api/channel/batch/tag',
+    data,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+/**
+ * Append models to selected channels without removing existing ones.
+ */
+export async function batchAddChannelModels(
+  data: BatchAddModelsParams
+): Promise<{ success: boolean; message?: string; data?: number }> {
+  const res = await api.post(
+    '/api/channel/batch/models',
+    data,
+    channelActionConfig()
+  )
+  return res.data
+}
+
+/**
+ * Merge per-model RPM limits onto every non-archived key of selected channels.
+ * Existing values for the same model are overwritten.
+ */
+export async function batchAddChannelModelRpmLimits(
+  data: BatchAddModelRpmLimitsParams
+): Promise<{ success: boolean; message?: string; data?: number }> {
+  const res = await api.post(
+    '/api/channel/batch/model_rpm_limits',
     data,
     channelActionConfig()
   )
@@ -710,7 +755,11 @@ export async function updateChannelTemplate(data: {
   name_suffix_length?: number
   source_channel_id?: number
 }): Promise<{ success: boolean; message?: string; data?: ChannelTemplate }> {
-  const res = await api.put('/api/channel/templates', data, channelActionConfig())
+  const res = await api.put(
+    '/api/channel/templates',
+    data,
+    channelActionConfig()
+  )
   return res.data
 }
 

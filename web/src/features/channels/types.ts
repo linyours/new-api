@@ -34,6 +34,20 @@ export const channelInfoSchema = z.object({
 
 export type ChannelInfo = z.infer<typeof channelInfoSchema>
 
+export const channelHealthLayerSchema = z.object({
+  minutes: z.number(),
+  window_seconds: z.number(),
+  total: z.number(),
+  success: z.number(),
+  bad: z.number(),
+  success_rate: z.number(),
+  error_rate: z.number(),
+  min_total: z.number().default(30),
+  sample_ready: z.boolean(),
+})
+
+export type ChannelHealthLayer = z.infer<typeof channelHealthLayerSchema>
+
 export const channelHealthSchema = z.object({
   window_seconds: z.number(),
   total: z.number(),
@@ -44,6 +58,7 @@ export const channelHealthSchema = z.object({
   min_total: z.number().default(30),
   alert_below: z.number().default(0.5),
   sample_ready: z.boolean(),
+  layers: z.array(channelHealthLayerSchema).optional(),
 })
 
 export type ChannelHealth = z.infer<typeof channelHealthSchema>
@@ -192,6 +207,25 @@ export interface GetChannelResponse {
   success: boolean
   message?: string
   data?: Channel
+}
+
+export interface ChannelRecentErrorItem {
+  id: number
+  created_at: number
+  model_name?: string
+  content: string
+  status_code?: number
+}
+
+export interface ChannelRecentErrorsData {
+  items: ChannelRecentErrorItem[]
+  window_seconds: number
+}
+
+export interface GetChannelRecentErrorsResponse {
+  success: boolean
+  message?: string
+  data?: ChannelRecentErrorsData
 }
 
 export interface ChannelOpsResponse {
@@ -367,6 +401,16 @@ export interface BatchDeleteParams {
 export interface BatchSetTagParams {
   ids: number[]
   tag: string | null
+}
+
+export interface BatchAddModelsParams {
+  ids: number[]
+  models: string[]
+}
+
+export interface BatchAddModelRpmLimitsParams {
+  ids: number[]
+  model_rpm_limits: Record<string, number>
 }
 
 export interface TagOperationParams {

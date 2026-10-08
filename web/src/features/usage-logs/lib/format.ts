@@ -410,14 +410,14 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'channel.tag_enable': 'Enabled channels with tag {{tag}}',
   'channel.tag_edit': 'Edited channels with tag {{tag}}',
   'channel.tag_batch_set': 'Batch set tag for {{count}} channels',
+  'channel.models_batch_add': 'Added models to {{count}} channels',
+  'channel.model_rpm_limits_batch_add':
+    'Updated model RPM limits on {{count}} channels',
   'channel.copy':
     'Copied channel (source ID: {{sourceId}}) to {{name}} (new ID: {{id}})',
-  'channel.template.create':
-    'Created channel template {{name}} (ID: {{id}})',
-  'channel.template.update':
-    'Updated channel template {{name}} (ID: {{id}})',
-  'channel.template.delete':
-    'Deleted channel template {{name}} (ID: {{id}})',
+  'channel.template.create': 'Created channel template {{name}} (ID: {{id}})',
+  'channel.template.update': 'Updated channel template {{name}} (ID: {{id}})',
+  'channel.template.delete': 'Deleted channel template {{name}} (ID: {{id}})',
   'channel.template.apply':
     'Applied channel template {{name}} and created {{count}} channels',
   'channel.multi_key_manage':

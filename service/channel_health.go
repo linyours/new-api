@@ -19,19 +19,23 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
-// Channel health uses 1-minute buckets over a 5-minute window.
-// List and alerts share the same counters so they cannot diverge.
+// Channel health uses 1-minute buckets. The list badge, alerts, and auto-disable
+// use the 5-minute window; longer layers are display-only.
 const (
 	channelHealthWindowMinutes     = 5
+	channelHealthMaxWindowMinutes  = 60
 	channelHealthCooldown          = 20 * time.Minute
-	channelHealthBucketTTL         = 6 * time.Minute
+	channelHealthBucketTTL         = 61 * time.Minute
 	channelHealthShardCount        = 32
 	channelHealthRecentErrorLimit  = 5
 	channelHealthErrorPreviewRunes = 200
 )
 
-// ChannelHealthSnapshot is the list/alert view of one channel's recent window.
-type ChannelHealthSnapshot struct {
+var channelHealthLayerMinutes = []int{1, 5, 15, 30, 60}
+
+// ChannelHealthLayer is one rolling window aggregated from 1-minute buckets.
+type ChannelHealthLayer struct {
+	Minutes       int     `json:"minutes"`
 	WindowSeconds int     `json:"window_seconds"`
 	Total         int64   `json:"total"`
 	Success       int64   `json:"success"`
@@ -39,8 +43,22 @@ type ChannelHealthSnapshot struct {
 	SuccessRate   float64 `json:"success_rate"`
 	ErrorRate     float64 `json:"error_rate"`
 	MinTotal      int     `json:"min_total"`
-	AlertBelow    float64 `json:"alert_below"`
 	SampleReady   bool    `json:"sample_ready"`
+}
+
+// ChannelHealthSnapshot is the list/alert view of one channel's recent window.
+// Top-level counters are the 5-minute layer so existing clients keep working.
+type ChannelHealthSnapshot struct {
+	WindowSeconds int                  `json:"window_seconds"`
+	Total         int64                `json:"total"`
+	Success       int64                `json:"success"`
+	Bad           int64                `json:"bad"`
+	SuccessRate   float64              `json:"success_rate"`
+	ErrorRate     float64              `json:"error_rate"`
+	MinTotal      int                  `json:"min_total"`
+	AlertBelow    float64              `json:"alert_below"`
+	SampleReady   bool                 `json:"sample_ready"`
+	Layers        []ChannelHealthLayer `json:"layers,omitempty"`
 }
 
 type channelHealthCounts struct {
@@ -54,10 +72,22 @@ type channelHealthShard struct {
 	buckets map[int]map[int64]channelHealthCounts
 }
 
+type channelHealthDisableTarget struct {
+	ID       int
+	Type     int
+	Name     string
+	AutoBan  bool
+	Status   int
+	MultiKey bool
+}
+
 var (
-	channelHealthShards     [channelHealthShardCount]channelHealthShard
-	channelHealthAlertUntil sync.Map
-	notifyChannelHealthFn   = notifyChannelHealthAlert
+	channelHealthShards             [channelHealthShardCount]channelHealthShard
+	channelHealthAlertUntil         sync.Map
+	channelHealthDisableUntil       sync.Map
+	notifyChannelHealthFn           = notifyChannelHealthAlert
+	lookupChannelForHealthDisableFn = lookupChannelForHealthDisable
+	disableChannelHealthFn          = DisableChannel
 )
 
 func init() {
@@ -76,6 +106,10 @@ func channelHealthRedisKey(channelID int, minute int64) string {
 
 func channelHealthAlertKey(channelID int) string {
 	return fmt.Sprintf("channel_health_alert:%d", channelID)
+}
+
+func channelHealthDisableKey(channelID int) string {
+	return fmt.Sprintf("channel_health_disable:%d", channelID)
 }
 
 func channelHealthShardOf(channelID int) *channelHealthShard {
@@ -105,6 +139,66 @@ func finalizeHealthSnapshot(counts channelHealthCounts) ChannelHealthSnapshot {
 		snap.ErrorRate = float64(counts.Bad) / float64(counts.Total)
 	}
 	snap.SampleReady = counts.Total >= int64(minTotal)
+	return snap
+}
+
+func channelHealthLayerMinTotal(minutes, baseMinTotal int) int {
+	if minutes <= 0 {
+		minutes = channelHealthWindowMinutes
+	}
+	if baseMinTotal < 1 {
+		baseMinTotal = operation_setting.DefaultChannelHealthMinTotal
+	}
+	n := (baseMinTotal*minutes + channelHealthWindowMinutes - 1) / channelHealthWindowMinutes
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+func finalizeHealthLayer(minutes int, counts channelHealthCounts) ChannelHealthLayer {
+	minTotal := channelHealthLayerMinTotal(minutes, operation_setting.GetChannelHealthMinTotal())
+	layer := ChannelHealthLayer{
+		Minutes:       minutes,
+		WindowSeconds: minutes * 60,
+		Total:         counts.Total,
+		Success:       counts.Success,
+		Bad:           counts.Bad,
+		MinTotal:      minTotal,
+	}
+	if counts.Total > 0 {
+		layer.SuccessRate = float64(counts.Success) / float64(counts.Total)
+		layer.ErrorRate = float64(counts.Bad) / float64(counts.Total)
+	}
+	layer.SampleReady = counts.Total >= int64(minTotal)
+	return layer
+}
+
+func snapshotFromMinuteBuckets(perMinute []channelHealthCounts) ChannelHealthSnapshot {
+	if len(perMinute) < channelHealthMaxWindowMinutes {
+		padded := make([]channelHealthCounts, channelHealthMaxWindowMinutes)
+		copy(padded, perMinute)
+		perMinute = padded
+	}
+	layers := make([]ChannelHealthLayer, 0, len(channelHealthLayerMinutes))
+	var running channelHealthCounts
+	layerIdx := 0
+	var primary channelHealthCounts
+	for i := 0; i < channelHealthMaxWindowMinutes; i++ {
+		running.Total += perMinute[i].Total
+		running.Success += perMinute[i].Success
+		running.Bad += perMinute[i].Bad
+		minutes := i + 1
+		if minutes == channelHealthWindowMinutes {
+			primary = running
+		}
+		if layerIdx < len(channelHealthLayerMinutes) && minutes == channelHealthLayerMinutes[layerIdx] {
+			layers = append(layers, finalizeHealthLayer(minutes, running))
+			layerIdx++
+		}
+	}
+	snap := finalizeHealthSnapshot(primary)
+	snap.Layers = layers
 	return snap
 }
 
@@ -161,6 +255,7 @@ func ObserveChannelHealth(channelID int, channelName string, total, success, bad
 	}
 	snap := GetChannelHealthStats([]int{channelID})[strconv.Itoa(channelID)]
 	MaybeAlertChannelHealth(channelID, channelName, snap)
+	MaybeDisableChannelByHealth(channelID, channelName, snap)
 }
 
 // MaybeAlertChannelHealth sends one cooldown-gated alert if the current window
@@ -184,6 +279,22 @@ func MaybeAlertChannelHealth(channelID int, channelName string, snap ChannelHeal
 	gopool.Go(func() {
 		if !notifyChannelHealthFn(channelID, channelName, snap) {
 			releaseChannelHealthAlertLock(channelID)
+		}
+	})
+}
+
+// MaybeDisableChannelByHealth auto-disables an enabled channel when the
+// 5-minute window is sample-ready, success is 0, and classified errors exist.
+func MaybeDisableChannelByHealth(channelID int, channelName string, snap ChannelHealthSnapshot) {
+	if channelID <= 0 || !common.AutomaticDisableChannelEnabled || !shouldDisableChannelByHealth(snap) {
+		return
+	}
+	if !tryChannelHealthDisableLock(channelID, time.Now()) {
+		return
+	}
+	gopool.Go(func() {
+		if !disableChannelByZeroSuccessRate(channelID, channelName, snap) {
+			releaseChannelHealthDisableLock(channelID)
 		}
 	})
 }
@@ -270,9 +381,9 @@ func getChannelHealthRedis(ids []int, now time.Time) (map[string]ChannelHealthSn
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	pipe := common.RDB.Pipeline()
-	cmds := make([]*redis.StringStringMapCmd, 0, len(ids)*channelHealthWindowMinutes)
+	cmds := make([]*redis.StringStringMapCmd, 0, len(ids)*channelHealthMaxWindowMinutes)
 	for _, id := range ids {
-		for i := 0; i < channelHealthWindowMinutes; i++ {
+		for i := 0; i < channelHealthMaxWindowMinutes; i++ {
 			cmds = append(cmds, pipe.HGetAll(ctx, channelHealthRedisKey(id, minute-int64(i))))
 		}
 	}
@@ -281,18 +392,20 @@ func getChannelHealthRedis(ids []int, now time.Time) (map[string]ChannelHealthSn
 	}
 	cmdIdx := 0
 	for _, id := range ids {
-		var counts channelHealthCounts
-		for i := 0; i < channelHealthWindowMinutes; i++ {
+		perMinute := make([]channelHealthCounts, channelHealthMaxWindowMinutes)
+		for i := 0; i < channelHealthMaxWindowMinutes; i++ {
 			vals, err := cmds[cmdIdx].Result()
 			cmdIdx++
 			if err != nil && !errors.Is(err, redis.Nil) {
 				return nil, err
 			}
-			counts.Total += parseHealthField(vals["total"])
-			counts.Success += parseHealthField(vals["success"])
-			counts.Bad += parseHealthField(vals["bad"])
+			perMinute[i] = channelHealthCounts{
+				Total:   parseHealthField(vals["total"]),
+				Success: parseHealthField(vals["success"]),
+				Bad:     parseHealthField(vals["bad"]),
+			}
 		}
-		out[strconv.Itoa(id)] = finalizeHealthSnapshot(counts)
+		out[strconv.Itoa(id)] = snapshotFromMinuteBuckets(perMinute)
 	}
 	return out, nil
 }
@@ -318,7 +431,7 @@ func incrChannelHealthMemory(channelID int, now time.Time, total, success, bad i
 		byMinute = make(map[int64]channelHealthCounts)
 		shard.buckets[channelID] = byMinute
 	}
-	expireBefore := minute - int64(channelHealthWindowMinutes)
+	expireBefore := minute - int64(channelHealthMaxWindowMinutes)
 	for key := range byMinute {
 		if key < expireBefore {
 			delete(byMinute, key)
@@ -334,27 +447,26 @@ func incrChannelHealthMemory(channelID int, now time.Time, total, success, bad i
 func getChannelHealthMemory(ids []int, now time.Time) map[string]ChannelHealthSnapshot {
 	out := make(map[string]ChannelHealthSnapshot, len(ids))
 	minute := currentHealthMinute(now)
-	expireBefore := minute - int64(channelHealthWindowMinutes)
+	expireBefore := minute - int64(channelHealthMaxWindowMinutes)
 	for _, id := range ids {
 		shard := channelHealthShardOf(id)
 		shard.mu.Lock()
-		var counts channelHealthCounts
+		perMinute := make([]channelHealthCounts, channelHealthMaxWindowMinutes)
 		if byMinute := shard.buckets[id]; byMinute != nil {
 			for key, bucket := range byMinute {
 				if key < expireBefore {
 					delete(byMinute, key)
 					continue
 				}
-				if key > minute || key <= minute-int64(channelHealthWindowMinutes) {
+				offset := minute - key
+				if offset < 0 || offset >= int64(channelHealthMaxWindowMinutes) {
 					continue
 				}
-				counts.Total += bucket.Total
-				counts.Success += bucket.Success
-				counts.Bad += bucket.Bad
+				perMinute[offset] = bucket
 			}
 		}
 		shard.mu.Unlock()
-		out[strconv.Itoa(id)] = finalizeHealthSnapshot(counts)
+		out[strconv.Itoa(id)] = snapshotFromMinuteBuckets(perMinute)
 	}
 	return out
 }
@@ -377,17 +489,7 @@ func tryChannelHealthAlertLockRedis(channelID int) (bool, error) {
 }
 
 func tryChannelHealthAlertLockMemory(channelID int, now time.Time) bool {
-	until := now.Add(channelHealthCooldown)
-	actual, loaded := channelHealthAlertUntil.LoadOrStore(channelID, until)
-	if !loaded {
-		return true
-	}
-	prev, ok := actual.(time.Time)
-	if !ok || !now.Before(prev) {
-		channelHealthAlertUntil.Store(channelID, until)
-		return true
-	}
-	return false
+	return tryChannelHealthLockMemory(&channelHealthAlertUntil, channelID, now)
 }
 
 func releaseChannelHealthAlertLock(channelID int) {
@@ -401,6 +503,48 @@ func releaseChannelHealthAlertLock(channelID int) {
 	channelHealthAlertUntil.Delete(channelID)
 }
 
+func tryChannelHealthDisableLock(channelID int, now time.Time) bool {
+	if common.RedisEnabled && common.RDB != nil {
+		ok, err := tryChannelHealthDisableLockRedis(channelID)
+		if err == nil {
+			return ok
+		}
+		common.SysError("channel health disable lock redis fallback: " + err.Error())
+	}
+	return tryChannelHealthLockMemory(&channelHealthDisableUntil, channelID, now)
+}
+
+func tryChannelHealthDisableLockRedis(channelID int) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return common.RDB.SetNX(ctx, channelHealthDisableKey(channelID), "1", channelHealthCooldown).Result()
+}
+
+func tryChannelHealthLockMemory(store *sync.Map, channelID int, now time.Time) bool {
+	until := now.Add(channelHealthCooldown)
+	actual, loaded := store.LoadOrStore(channelID, until)
+	if !loaded {
+		return true
+	}
+	prev, ok := actual.(time.Time)
+	if !ok || !now.Before(prev) {
+		store.Store(channelID, until)
+		return true
+	}
+	return false
+}
+
+func releaseChannelHealthDisableLock(channelID int) {
+	if common.RedisEnabled && common.RDB != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := common.RDB.Del(ctx, channelHealthDisableKey(channelID)).Err(); err != nil {
+			common.SysError("channel health disable lock release: " + err.Error())
+		}
+	}
+	channelHealthDisableUntil.Delete(channelID)
+}
+
 var sendChannelHealthWebhookFn = SendWebhookNotify
 
 func shouldAlertChannelHealth(snap ChannelHealthSnapshot) bool {
@@ -408,6 +552,65 @@ func shouldAlertChannelHealth(snap ChannelHealthSnapshot) bool {
 		return false
 	}
 	return snap.SuccessRate*100 < float64(operation_setting.GetChannelHealthAlertBelowPercent())
+}
+
+func shouldDisableChannelByHealth(snap ChannelHealthSnapshot) bool {
+	return snap.SampleReady && snap.Total > 0 && snap.Success == 0 && snap.Bad > 0
+}
+
+func lookupChannelForHealthDisable(channelID int) (*channelHealthDisableTarget, error) {
+	channel, err := model.CacheGetChannel(channelID)
+	if err != nil {
+		return nil, err
+	}
+	if channel == nil {
+		return nil, fmt.Errorf("channel %d not found", channelID)
+	}
+	return &channelHealthDisableTarget{
+		ID:       channel.Id,
+		Type:     channel.Type,
+		Name:     channel.Name,
+		AutoBan:  channel.GetAutoBan(),
+		Status:   channel.Status,
+		MultiKey: channel.ChannelInfo.IsMultiKey,
+	}, nil
+}
+
+func disableChannelByZeroSuccessRate(channelID int, channelName string, snap ChannelHealthSnapshot) bool {
+	target, err := lookupChannelForHealthDisableFn(channelID)
+	if err != nil {
+		common.SysError(fmt.Sprintf("channel health disable lookup #%d: %s", channelID, err.Error()))
+		return false
+	}
+	if target == nil {
+		return false
+	}
+	if target.Status != common.ChannelStatusEnabled {
+		return true
+	}
+	if !target.AutoBan {
+		common.SysLog(fmt.Sprintf(
+			"channel health disable skipped #%d %s: auto-ban is off",
+			channelID, channelName,
+		))
+		return false
+	}
+	reason := fmt.Sprintf(
+		"近5分钟成功率 0%%（%d / %d），计入错误 %d",
+		snap.Success,
+		snap.Total,
+		snap.Bad,
+	)
+	common.SysLog(fmt.Sprintf(
+		"channel health disable: #%d %s success=0%% (%d/%d) bad=%d",
+		channelID, channelName, snap.Success, snap.Total, snap.Bad,
+	))
+	name := channelName
+	if strings.TrimSpace(target.Name) != "" {
+		name = target.Name
+	}
+	disableChannelHealthFn(*types.NewChannelError(target.ID, target.Type, name, target.MultiKey, "", true), reason)
+	return true
 }
 
 func notifyChannelHealthAlert(channelID int, channelName string, snap ChannelHealthSnapshot) bool {
@@ -444,7 +647,11 @@ func formatChannelHealthAlert(channelName string, channelID int, snap ChannelHea
 	fmt.Fprintf(&b, "**近5分钟成功率** %.0f%%（%d / %d）\n", snap.SuccessRate*100, snap.Success, snap.Total)
 	fmt.Fprintf(&b, "**告警线** 低于 %d%%\n", operation_setting.GetChannelHealthAlertBelowPercent())
 	fmt.Fprintf(&b, "**计入错误** %d（超时与配置的错误状态码）\n", snap.Bad)
-	b.WriteString("**处理** 未自动禁用")
+	if shouldDisableChannelByHealth(snap) && common.AutomaticDisableChannelEnabled {
+		b.WriteString("**处理** 成功率 0%，将自动禁用该渠道")
+	} else {
+		b.WriteString("**处理** 未自动禁用")
+	}
 	if len(logs) == 0 {
 		b.WriteString("\n\n**最近错误** 暂无（窗口内可能尚未写入错误日志）")
 		return subject, b.String()
@@ -507,6 +714,56 @@ func truncateChannelHealthError(raw string) string {
 	return string(runes[:channelHealthErrorPreviewRunes]) + "…"
 }
 
+// ChannelRecentErrorItem is a sanitized preview of a recent channel error log.
+// It omits tokens, IPs, usernames, and the raw Other blob (admin_info, keys).
+type ChannelRecentErrorItem struct {
+	Id         int    `json:"id"`
+	CreatedAt  int64  `json:"created_at"`
+	ModelName  string `json:"model_name,omitempty"`
+	Content    string `json:"content"`
+	StatusCode int    `json:"status_code,omitempty"`
+}
+
+// ChannelRecentErrorsResult is the admin popup payload for one channel.
+type ChannelRecentErrorsResult struct {
+	Items         []ChannelRecentErrorItem `json:"items"`
+	WindowSeconds int                      `json:"window_seconds"`
+}
+
+func ListRecentChannelErrors(channelID int) (ChannelRecentErrorsResult, error) {
+	result := ChannelRecentErrorsResult{
+		Items:         []ChannelRecentErrorItem{},
+		WindowSeconds: channelHealthWindowMinutes * 60,
+	}
+	if channelID <= 0 {
+		return result, nil
+	}
+	since := time.Now().Add(-time.Duration(channelHealthWindowMinutes) * time.Minute).Unix()
+	logs, err := model.GetRecentErrorLogsByChannel(channelID, since, channelHealthRecentErrorLimit)
+	if err != nil {
+		return result, err
+	}
+	result.Items = channelRecentErrorItemsFromLogs(logs)
+	return result, nil
+}
+
+func channelRecentErrorItemsFromLogs(logs []*model.Log) []ChannelRecentErrorItem {
+	items := make([]ChannelRecentErrorItem, 0, len(logs))
+	for _, log := range logs {
+		if log == nil {
+			continue
+		}
+		items = append(items, ChannelRecentErrorItem{
+			Id:         log.Id,
+			CreatedAt:  log.CreatedAt,
+			ModelName:  strings.TrimSpace(log.ModelName),
+			Content:    truncateChannelHealthError(log.Content),
+			StatusCode: channelHealthErrorStatus(log.Other),
+		})
+	}
+	return items
+}
+
 func sendDedicatedChannelHealthWebhook(notifyType, subject, content string) bool {
 	webhookURL := strings.TrimSpace(operation_setting.ChannelHealthWebhookUrl)
 	if webhookURL == "" {
@@ -533,4 +790,5 @@ func resetChannelHealthForTest() {
 		shard.mu.Unlock()
 	}
 	channelHealthAlertUntil = sync.Map{}
+	channelHealthDisableUntil = sync.Map{}
 }

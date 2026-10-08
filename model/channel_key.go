@@ -462,6 +462,92 @@ func SyncChannelKeyStatusSummary(channelId int) error {
 // ReloadChannelKeyCache refreshes one channel after a management or exhaustion
 // transition. It replaces only that channel's slice, avoiding a global cache
 // rebuild on the settlement hot path.
+// BatchMergeChannelKeyModelRpmLimits merges model RPM limits into every
+// non-archived key of the selected channels. Existing values for the same
+// model are overwritten.
+func BatchMergeChannelKeyModelRpmLimits(ids []int, incoming ChannelKeyModelRpmLimits) (int, error) {
+	ids = uniquePositiveIDs(ids)
+	if len(ids) == 0 {
+		return 0, errors.New("no channels selected")
+	}
+	normalized, err := incoming.Normalize()
+	if err != nil {
+		return 0, err
+	}
+	if len(normalized) == 0 {
+		return 0, errors.New("no model RPM limits to add")
+	}
+
+	var keys []*ChannelKey
+	if err := DB.Where("channel_id in (?) AND status <> ?", ids, ChannelKeyStatusArchived).
+		Order("channel_id ASC, position ASC, id ASC").
+		Find(&keys).Error; err != nil {
+		return 0, err
+	}
+
+	type pendingKey struct {
+		id     int64
+		limits ChannelKeyModelRpmLimits
+	}
+	pending := make([]pendingKey, 0, len(keys))
+	changedChannels := make(map[int]struct{})
+
+	for _, key := range keys {
+		merged := make(ChannelKeyModelRpmLimits, len(key.ModelRpmLimits)+len(normalized))
+		for modelName, rpm := range key.ModelRpmLimits {
+			modelName = strings.TrimSpace(modelName)
+			if modelName == "" {
+				continue
+			}
+			merged[modelName] = rpm
+		}
+		changed := false
+		for modelName, rpm := range normalized {
+			if current, ok := merged[modelName]; ok && current == rpm {
+				continue
+			}
+			merged[modelName] = rpm
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		checked, err := merged.Normalize()
+		if err != nil {
+			return 0, err
+		}
+		pending = append(pending, pendingKey{id: key.Id, limits: checked})
+		changedChannels[key.ChannelId] = struct{}{}
+	}
+
+	if len(pending) == 0 {
+		return 0, nil
+	}
+
+	now := common.GetTimestamp()
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		for _, item := range pending {
+			if err := tx.Model(&ChannelKey{}).Where("id = ?", item.id).Updates(map[string]any{
+				"model_rpm_limits": item.limits,
+				"updated_at":       now,
+			}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	for channelId := range changedChannels {
+		if err := ReloadChannelKeyCache(channelId); err != nil {
+			return 0, err
+		}
+	}
+	return len(changedChannels), nil
+}
+
 func ReloadChannelKeyCache(channelId int) error {
 	var keys []*ChannelKey
 	if err := DB.

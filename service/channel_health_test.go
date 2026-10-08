@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -388,4 +389,280 @@ func TestFormatChannelHealthAlertIncludesRecentErrors(t *testing.T) {
 
 	_, emptyContent := formatChannelHealthAlert("模版-123", 24, snap, nil)
 	assert.Contains(t, emptyContent, "暂无")
+	assert.Contains(t, content, "**处理** 未自动禁用")
+}
+
+func TestObserveChannelHealthDisablesWhenSampleReadyAtZeroSuccess(t *testing.T) {
+	prevRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = prevRedis })
+	resetChannelHealthForTest()
+
+	origMin := operation_setting.ChannelHealthMinTotal
+	prevEnabled := common.AutomaticDisableChannelEnabled
+	t.Cleanup(func() {
+		operation_setting.ChannelHealthMinTotal = origMin
+		common.AutomaticDisableChannelEnabled = prevEnabled
+	})
+	operation_setting.ChannelHealthMinTotal = 2
+	common.AutomaticDisableChannelEnabled = true
+
+	var disabled atomic.Int32
+	prevLookup := lookupChannelForHealthDisableFn
+	prevDisable := disableChannelHealthFn
+	lookupChannelForHealthDisableFn = func(channelID int) (*channelHealthDisableTarget, error) {
+		return &channelHealthDisableTarget{
+			ID:      channelID,
+			Name:    "unstable",
+			AutoBan: true,
+			Status:  common.ChannelStatusEnabled,
+		}, nil
+	}
+	disableChannelHealthFn = func(channelError types.ChannelError, reason string) {
+		disabled.Add(1)
+		assert.Equal(t, 9, channelError.ChannelId)
+	}
+	t.Cleanup(func() {
+		lookupChannelForHealthDisableFn = prevLookup
+		disableChannelHealthFn = prevDisable
+	})
+
+	ObserveChannelHealth(9, "unstable", 1, 0, 1)
+	assert.Equal(t, int32(0), disabled.Load())
+	ObserveChannelHealth(9, "unstable", 1, 0, 1)
+	require.Eventually(t, func() bool {
+		return disabled.Load() == 1
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+func TestShouldDisableChannelByHealth(t *testing.T) {
+	assert.False(t, shouldDisableChannelByHealth(ChannelHealthSnapshot{SampleReady: false, Total: 5, Success: 0, Bad: 5}))
+	assert.False(t, shouldDisableChannelByHealth(ChannelHealthSnapshot{SampleReady: true, Total: 0, Success: 0, Bad: 0}))
+	assert.False(t, shouldDisableChannelByHealth(ChannelHealthSnapshot{SampleReady: true, Total: 30, Success: 0, Bad: 0}))
+	assert.False(t, shouldDisableChannelByHealth(ChannelHealthSnapshot{SampleReady: true, Total: 30, Success: 1, Bad: 29}))
+	assert.True(t, shouldDisableChannelByHealth(ChannelHealthSnapshot{SampleReady: true, Total: 30, Success: 0, Bad: 12}))
+}
+
+func TestMaybeDisableChannelByHealthDisablesOnceAtZeroSuccess(t *testing.T) {
+	prevRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = prevRedis })
+	resetChannelHealthForTest()
+
+	prevEnabled := common.AutomaticDisableChannelEnabled
+	common.AutomaticDisableChannelEnabled = true
+	t.Cleanup(func() { common.AutomaticDisableChannelEnabled = prevEnabled })
+
+	var disabled atomic.Int32
+	prevLookup := lookupChannelForHealthDisableFn
+	prevDisable := disableChannelHealthFn
+	lookupChannelForHealthDisableFn = func(channelID int) (*channelHealthDisableTarget, error) {
+		return &channelHealthDisableTarget{
+			ID:      channelID,
+			Name:    "模版-123",
+			AutoBan: true,
+			Status:  common.ChannelStatusEnabled,
+		}, nil
+	}
+	disableChannelHealthFn = func(channelError types.ChannelError, reason string) {
+		disabled.Add(1)
+		assert.Equal(t, 24, channelError.ChannelId)
+		assert.True(t, channelError.AutoBan)
+		assert.Empty(t, channelError.UsingKey)
+		assert.Contains(t, reason, "0%")
+		assert.Contains(t, reason, "30")
+		assert.Contains(t, reason, "12")
+	}
+	t.Cleanup(func() {
+		lookupChannelForHealthDisableFn = prevLookup
+		disableChannelHealthFn = prevDisable
+	})
+
+	snap := ChannelHealthSnapshot{SampleReady: true, Total: 30, Success: 0, Bad: 12, SuccessRate: 0}
+	MaybeDisableChannelByHealth(24, "模版-123", snap)
+	require.Eventually(t, func() bool {
+		return disabled.Load() == 1
+	}, 2*time.Second, 10*time.Millisecond)
+
+	MaybeDisableChannelByHealth(24, "模版-123", snap)
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, int32(1), disabled.Load())
+}
+
+func TestMaybeDisableChannelByHealthSkipsWhenAutoBanOffOrAlreadyDisabled(t *testing.T) {
+	prevRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = prevRedis })
+	resetChannelHealthForTest()
+
+	prevEnabled := common.AutomaticDisableChannelEnabled
+	common.AutomaticDisableChannelEnabled = true
+	t.Cleanup(func() { common.AutomaticDisableChannelEnabled = prevEnabled })
+
+	var disabled atomic.Int32
+	prevLookup := lookupChannelForHealthDisableFn
+	prevDisable := disableChannelHealthFn
+	disableChannelHealthFn = func(channelError types.ChannelError, reason string) {
+		disabled.Add(1)
+	}
+	t.Cleanup(func() {
+		lookupChannelForHealthDisableFn = prevLookup
+		disableChannelHealthFn = prevDisable
+	})
+
+	snap := ChannelHealthSnapshot{SampleReady: true, Total: 30, Success: 0, Bad: 12}
+
+	lookupChannelForHealthDisableFn = func(channelID int) (*channelHealthDisableTarget, error) {
+		return &channelHealthDisableTarget{ID: channelID, AutoBan: false, Status: common.ChannelStatusEnabled}, nil
+	}
+	MaybeDisableChannelByHealth(41, "no-ban", snap)
+	require.Eventually(t, func() bool {
+		_, loaded := channelHealthDisableUntil.Load(41)
+		return !loaded
+	}, 2*time.Second, 10*time.Millisecond)
+	assert.Equal(t, int32(0), disabled.Load())
+
+	resetChannelHealthForTest()
+	lookupChannelForHealthDisableFn = func(channelID int) (*channelHealthDisableTarget, error) {
+		return &channelHealthDisableTarget{ID: channelID, AutoBan: true, Status: common.ChannelStatusAutoDisabled}, nil
+	}
+	MaybeDisableChannelByHealth(42, "already-off", snap)
+	require.Eventually(t, func() bool {
+		_, loaded := channelHealthDisableUntil.Load(42)
+		return loaded
+	}, 2*time.Second, 10*time.Millisecond)
+	assert.Equal(t, int32(0), disabled.Load())
+}
+
+func TestMaybeDisableChannelByHealthRequiresGlobalSwitchAndClassifiedErrors(t *testing.T) {
+	prevRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = prevRedis })
+	resetChannelHealthForTest()
+
+	prevEnabled := common.AutomaticDisableChannelEnabled
+	t.Cleanup(func() { common.AutomaticDisableChannelEnabled = prevEnabled })
+
+	var disabled atomic.Int32
+	prevDisable := disableChannelHealthFn
+	disableChannelHealthFn = func(channelError types.ChannelError, reason string) {
+		disabled.Add(1)
+	}
+	t.Cleanup(func() { disableChannelHealthFn = prevDisable })
+
+	snap := ChannelHealthSnapshot{SampleReady: true, Total: 30, Success: 0, Bad: 12}
+	common.AutomaticDisableChannelEnabled = false
+	MaybeDisableChannelByHealth(51, "off", snap)
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, int32(0), disabled.Load())
+
+	common.AutomaticDisableChannelEnabled = true
+	MaybeDisableChannelByHealth(52, "no-bad", ChannelHealthSnapshot{SampleReady: true, Total: 30, Success: 0, Bad: 0})
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, int32(0), disabled.Load())
+}
+
+func TestFormatChannelHealthAlertMentionsAutoDisableWhenZeroSuccess(t *testing.T) {
+	prevEnabled := common.AutomaticDisableChannelEnabled
+	common.AutomaticDisableChannelEnabled = true
+	t.Cleanup(func() { common.AutomaticDisableChannelEnabled = prevEnabled })
+
+	_, content := formatChannelHealthAlert("模版-123", 24, ChannelHealthSnapshot{
+		SampleReady: true,
+		Total:       30,
+		Success:     0,
+		Bad:         12,
+		SuccessRate: 0,
+	}, nil)
+	assert.Contains(t, content, "将自动禁用该渠道")
+}
+
+func TestChannelRecentErrorItemsOmitSecretsAndTruncateContent(t *testing.T) {
+	assert.Empty(t, channelRecentErrorItemsFromLogs(nil))
+	assert.Empty(t, channelRecentErrorItemsFromLogs([]*model.Log{nil}))
+
+	longContent := strings.Repeat("失败 ", 120)
+	items := channelRecentErrorItemsFromLogs([]*model.Log{
+		{
+			Id:        9,
+			CreatedAt: 1_700_000_000,
+			ModelName: " gpt-4 ",
+			Content:   longContent,
+			Other:     `{"status_code":502,"admin_info":{"use_channel":[1],"secret":"sk-secret"}}`,
+			Username:  "alice",
+			TokenName: "sk-secret",
+			Ip:        "10.0.0.1",
+		},
+		{
+			Id:      10,
+			Content: "plain timeout",
+		},
+	})
+	require.Len(t, items, 2)
+	assert.Equal(t, 9, items[0].Id)
+	assert.Equal(t, "gpt-4", items[0].ModelName)
+	assert.Equal(t, 502, items[0].StatusCode)
+	assert.LessOrEqual(t, len([]rune(items[0].Content)), channelHealthErrorPreviewRunes+1)
+	assert.True(t, strings.HasSuffix(items[0].Content, "…"))
+	assert.Equal(t, 0, items[1].StatusCode)
+	assert.Equal(t, "plain timeout", items[1].Content)
+
+	encoded, err := common.Marshal(items[0])
+	require.NoError(t, err)
+	payload := string(encoded)
+	assert.NotContains(t, payload, "alice")
+	assert.NotContains(t, payload, "sk-secret")
+	assert.NotContains(t, payload, "admin_info")
+	assert.NotContains(t, payload, "10.0.0.1")
+}
+
+func TestListRecentChannelErrorsRejectsInvalidChannel(t *testing.T) {
+	result, err := ListRecentChannelErrors(0)
+	require.NoError(t, err)
+	assert.Empty(t, result.Items)
+	assert.Equal(t, channelHealthWindowMinutes*60, result.WindowSeconds)
+	assert.NotNil(t, result.Items)
+}
+
+func TestChannelHealthLayerMinTotalScalesFromFiveMinuteBase(t *testing.T) {
+	assert.Equal(t, 6, channelHealthLayerMinTotal(1, 30))
+	assert.Equal(t, 30, channelHealthLayerMinTotal(5, 30))
+	assert.Equal(t, 90, channelHealthLayerMinTotal(15, 30))
+	assert.Equal(t, 180, channelHealthLayerMinTotal(30, 30))
+	assert.Equal(t, 360, channelHealthLayerMinTotal(60, 30))
+	assert.Equal(t, 1, channelHealthLayerMinTotal(1, 1))
+}
+
+func TestChannelHealthLayersAggregateWindowsAndExpireOldBuckets(t *testing.T) {
+	prevRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = prevRedis })
+	resetChannelHealthForTest()
+
+	now := time.Now()
+	require.NoError(t, incrChannelHealth(3, now, 1, 1, 0))
+	require.NoError(t, incrChannelHealth(3, now.Add(-2*time.Minute), 1, 0, 1))
+	require.NoError(t, incrChannelHealth(3, now.Add(-10*time.Minute), 1, 0, 1))
+	require.NoError(t, incrChannelHealth(3, now.Add(-40*time.Minute), 2, 2, 0))
+	require.NoError(t, incrChannelHealth(3, now.Add(-70*time.Minute), 5, 0, 5))
+
+	snap := GetChannelHealthStats([]int{3})["3"]
+	assert.Equal(t, int64(2), snap.Total)
+	assert.Equal(t, int64(1), snap.Success)
+	assert.Equal(t, int64(1), snap.Bad)
+	require.Len(t, snap.Layers, len(channelHealthLayerMinutes))
+
+	byMinutes := map[int]ChannelHealthLayer{}
+	for _, layer := range snap.Layers {
+		byMinutes[layer.Minutes] = layer
+	}
+	assert.Equal(t, int64(1), byMinutes[1].Total)
+	assert.Equal(t, int64(1), byMinutes[1].Success)
+	assert.Equal(t, int64(2), byMinutes[5].Total)
+	assert.Equal(t, snap.Total, byMinutes[5].Total)
+	assert.Equal(t, snap.SuccessRate, byMinutes[5].SuccessRate)
+	assert.Equal(t, int64(3), byMinutes[15].Total)
+	assert.Equal(t, int64(3), byMinutes[30].Total)
+	assert.Equal(t, int64(5), byMinutes[60].Total)
+	assert.Equal(t, int64(3), byMinutes[60].Success)
 }
