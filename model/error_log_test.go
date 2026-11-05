@@ -43,20 +43,20 @@ func TestErrorLogsAreIsolatedFromUsageLogs(t *testing.T) {
 	assert.Equal(t, int64(1), usageCount)
 	assert.Equal(t, int64(1), errorCount)
 
-	errorLogs, errorTotal, err := GetAllLogs(LogTypeError, 0, 0, "", "", "", 0, 10, 0, "", "", "")
+	errorLogs, errorTotal, err := GetAllLogs(LogFilter{Type: LogTypeError}, 0, 10)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), errorTotal)
 	require.Len(t, errorLogs, 1)
 	assert.Equal(t, "boom", errorLogs[0].Content)
 	assert.Equal(t, LogTypeError, errorLogs[0].Type)
 
-	consumeLogs, consumeTotal, err := GetAllLogs(LogTypeConsume, 0, 0, "", "", "", 0, 10, 0, "", "", "")
+	consumeLogs, consumeTotal, err := GetAllLogs(LogFilter{Type: LogTypeConsume}, 0, 10)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), consumeTotal)
 	require.Len(t, consumeLogs, 1)
 	assert.Equal(t, "usage", consumeLogs[0].Content)
 
-	allLogs, allTotal, err := GetAllLogs(LogTypeUnknown, 0, 0, "", "", "", 0, 10, 0, "", "", "")
+	allLogs, allTotal, err := GetAllLogs(LogFilter{Type: LogTypeUnknown}, 0, 10)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), allTotal)
 	require.Len(t, allLogs, 1)
@@ -146,7 +146,7 @@ func TestDeleteErrorLogsBeforeBatchKeepsRecentRows(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), remaining)
 
-	logs, total, err := GetAllLogs(LogTypeError, 0, 0, "", "", "", 0, 10, 0, "", "", "")
+	logs, total, err := GetAllLogs(LogFilter{Type: LogTypeError}, 0, 10)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), total)
 	require.Len(t, logs, 1)
@@ -201,4 +201,17 @@ func TestClickHouseErrorLogTTLDaysFollowsSetting(t *testing.T) {
 
 	setting.RetainDays = 0
 	assert.Equal(t, 1, clickHouseErrorLogTTLDays())
+}
+
+func TestErrorLogExportUsesSeparateTableAndUserScope(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, createLog(&Log{UserId: 17, Type: LogTypeConsume, RequestId: "usage"}))
+	require.NoError(t, createErrorLog(&Log{UserId: 17, Type: LogTypeError, RequestId: "own-error", ChannelId: 3}))
+	require.NoError(t, createErrorLog(&Log{UserId: 18, Type: LogTypeError, RequestId: "other-error", ChannelId: 3}))
+	var exported []string
+	require.NoError(t, StreamUserLogs(t.Context(), 17, LogFilter{Type: LogTypeError, Channel: 3}, func(row *Log) error {
+		exported = append(exported, row.RequestId)
+		return nil
+	}))
+	assert.Equal(t, []string{"own-error"}, exported)
 }

@@ -71,16 +71,8 @@ export function ChannelKeyArchives() {
   )
   const [copyingArchiveId, setCopyingArchiveId] = useState<number | null>(null)
   const { copyToClipboard } = useCopyToClipboard()
-  const {
-    open: verificationOpen,
-    methods: verificationMethods,
-    state: verificationState,
-    executeVerification,
-    withVerification,
-    cancel: cancelVerification,
-    setCode: setVerificationCode,
-    switchMethod: switchVerificationMethod,
-  } = useSecureVerification()
+  const verification = useSecureVerification()
+  const requestVerification = verification.requestVerification
 
   const archivesQuery = useQuery({
     queryKey: ['channel-key-archives', page, channelId],
@@ -180,24 +172,24 @@ export function ChannelKeyArchives() {
   const handleCopyArchivedKey = useCallback(
     async (key: ArchivedChannelKey) => {
       try {
-        await withVerification(
-          (proofToken) => fetchAndCopyArchivedKey(key.archive_id, proofToken),
-          {
-            scope: 'channel.key.read',
-            preferredMethod: 'passkey',
-            title: t('Verify to copy archived key'),
-            description: t(
-              'Use Passkey or 2FA to confirm your identity before copying this archived key.'
-            ),
-          }
-        )
+        const proof = await requestVerification({
+          scope: 'channel.key.read',
+          context: { archive_id: key.archive_id },
+          title: t('Verify to copy archived key'),
+          description: t(
+            'Use Passkey or 2FA to confirm your identity before copying this archived key.'
+          ),
+        })
+        if (proof) {
+          await fetchAndCopyArchivedKey(key.archive_id, proof.proof_token)
+        }
       } catch (error) {
         if (error instanceof Error) {
           toast.error(error.message)
         }
       }
     },
-    [fetchAndCopyArchivedKey, t, withVerification]
+    [fetchAndCopyArchivedKey, t, requestVerification]
   )
 
   return (
@@ -341,7 +333,7 @@ export function ChannelKeyArchives() {
                               disabled={
                                 !canCopy ||
                                 copyingArchiveId === key.archive_id ||
-                                verificationState.loading
+                                verification.isActive
                               }
                               title={
                                 canCopy
@@ -476,22 +468,7 @@ export function ChannelKeyArchives() {
           }
         }}
       />
-      <SecureVerificationDialog
-        open={verificationOpen}
-        onOpenChange={(open) => {
-          if (!open) {
-            cancelVerification()
-          }
-        }}
-        methods={verificationMethods}
-        state={verificationState}
-        onVerify={async (method, code) => {
-          await executeVerification(method, code)
-        }}
-        onCancel={cancelVerification}
-        onCodeChange={setVerificationCode}
-        onMethodChange={switchVerificationMethod}
-      />
+      <SecureVerificationDialog {...verification.dialogProps} />
     </>
   )
 }

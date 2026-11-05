@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
 
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -83,7 +84,7 @@ func TestGetChannelExcludingFallsBackAfterHighestPriorityIsExcluded(t *testing.T
 		"vip",
 		"gpt-4o",
 		0,
-		"/v1/chat/completions",
+		[]dto.ChannelFilter{{Kind: dto.FilterRequestPath, RequestPath: "/v1/chat/completions"}},
 		map[int]struct{}{highPriorityId: {}},
 	)
 
@@ -100,7 +101,7 @@ func TestGetChannelExcludingKeepsHighestPriorityWithoutExclusions(t *testing.T) 
 		"vip",
 		"gpt-4o",
 		0,
-		"/v1/chat/completions",
+		[]dto.ChannelFilter{{Kind: dto.FilterRequestPath, RequestPath: "/v1/chat/completions"}},
 		nil,
 	)
 
@@ -117,7 +118,7 @@ func TestGetChannelExcludingReturnsNilWhenAllChannelsAreExcluded(t *testing.T) {
 		"vip",
 		"gpt-4o",
 		0,
-		"/v1/chat/completions",
+		[]dto.ChannelFilter{{Kind: dto.FilterRequestPath, RequestPath: "/v1/chat/completions"}},
 		map[int]struct{}{
 			highPriorityId: {},
 			lowPriorityId:  {},

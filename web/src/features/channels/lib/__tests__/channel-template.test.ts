@@ -7,7 +7,8 @@ published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version.
 */
 import assert from 'node:assert/strict'
-import { describe, it } from 'node:test'
+
+import { describe, it } from 'vitest'
 
 import {
   buildChannelTemplateChannelName,
@@ -50,20 +51,23 @@ describe('channel template naming', () => {
   it('splits newline keys and Vertex JSON arrays', () => {
     assert.deepEqual(splitTemplateApplyKeys('sk-a\n\nsk-b\n'), ['sk-a', 'sk-b'])
     assert.deepEqual(
-      splitTemplateApplyKeys('[{"client_email":"a@x.com"},{"client_email":"b@x.com"}]', {
-        vertexJson: true,
-      }),
+      splitTemplateApplyKeys(
+        '[{"client_email":"a@x.com"},{"client_email":"b@x.com"}]',
+        {
+          vertexJson: true,
+        }
+      ),
       ['{"client_email":"a@x.com"}', '{"client_email":"b@x.com"}']
     )
   })
 
   it('accepts one Vertex service account object and rebuilds a JSON array', () => {
-    const account = '{"client_email":"svc-abcdef@project.iam.gserviceaccount.com"}'
+    const account =
+      '{"client_email":"svc-abcdef@project.iam.gserviceaccount.com"}'
     assert.deepEqual(parseVertexServiceAccountText(account), [account])
-    assert.deepEqual(
-      splitTemplateApplyKeys(account, { vertexJson: true }),
-      [account]
-    )
+    assert.deepEqual(splitTemplateApplyKeys(account, { vertexJson: true }), [
+      account,
+    ])
     assert.equal(
       serializeVertexTemplateKeys([account]),
       '[{"client_email":"svc-abcdef@project.iam.gserviceaccount.com"}]'
@@ -107,11 +111,21 @@ describe('channel template naming', () => {
     assert.throws(() => parseVertexServiceAccountText('{'))
     assert.deepEqual(parseVertexServiceAccountText('123'), [])
     assert.deepEqual(parseVertexServiceAccountText('"account"'), [])
-    assert.deepEqual(parseVertexServiceAccountText('[{"client_email":"a@x.com"}, "nope"]'), [])
+    assert.deepEqual(
+      parseVertexServiceAccountText('[{"client_email":"a@x.com"}, "nope"]'),
+      []
+    )
   })
 
   it('keeps a pasted Vertex object on the same row and rejects invalid JSON', () => {
-    const rows = [{ key: '', draft: '', proxy: 'socks5://proxy.example:1080', jsonError: false }]
+    const rows = [
+      {
+        key: '',
+        draft: '',
+        proxy: 'socks5://proxy.example:1080',
+        jsonError: false,
+      },
+    ]
     const valid = applyVertexTextToRow(
       rows,
       0,
@@ -124,26 +138,23 @@ describe('channel template naming', () => {
     assert.equal(valid[0]?.proxy, 'socks5://proxy.example:1080')
 
     const formatted = '{\n  "client_email": "a@x.com"\n}'
-    const kept = applyVertexTextToRow(
-      rows,
-      0,
-      formatted,
-      (account) => ({ key: account, draft: '', proxy: '', jsonError: false })
-    )
+    const kept = applyVertexTextToRow(rows, 0, formatted, (account) => ({
+      key: account,
+      draft: '',
+      proxy: '',
+      jsonError: false,
+    }))
     assert.equal(kept[0]?.draft, formatted)
 
-    const invalid = applyVertexTextToRow(
-      valid,
-      0,
-      '{bad',
-      (account) => ({ key: account, draft: '', proxy: '', jsonError: false })
-    )
+    const invalid = applyVertexTextToRow(valid, 0, '{bad', (account) => ({
+      key: account,
+      draft: '',
+      proxy: '',
+      jsonError: false,
+    }))
     assert.equal(invalid[0]?.jsonError, true)
     assert.equal(invalid[0]?.key, '')
-    assert.equal(
-      validateVertexTemplateRows(invalid).invalid,
-      true
-    )
+    assert.equal(validateVertexTemplateRows(invalid).invalid, true)
     assert.deepEqual(validateVertexTemplateRows(valid).items, [
       {
         key: '{"client_email":"a@x.com"}',
@@ -153,7 +164,14 @@ describe('channel template naming', () => {
   })
 
   it('splits a pasted Vertex JSON array and does not submit the raw text again', () => {
-    const rows = [{ key: '', draft: '', proxy: 'socks5://proxy.example:1080', jsonError: false }]
+    const rows = [
+      {
+        key: '',
+        draft: '',
+        proxy: 'socks5://proxy.example:1080',
+        jsonError: false,
+      },
+    ]
     const next = applyVertexTextToRow(
       rows,
       0,

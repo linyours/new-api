@@ -395,7 +395,7 @@ func releaseChannelKeyRPM(ctx context.Context, lease *channelKeyRPMLease) {
 	unlockLocalChannelKeyRPMShards(shards)
 }
 
-func orderedChannelKeys(channel *model.Channel) ([]*model.ChannelKey, error) {
+func orderedChannelKeys(channel *model.Channel, preferredKeyID int64) ([]*model.ChannelKey, error) {
 	allKeys := model.CacheGetChannelKeys(channel.Id)
 	if !common.MemoryCacheEnabled || len(allKeys) == 0 {
 		var err error
@@ -408,6 +408,16 @@ func orderedChannelKeys(channel *model.Channel) ([]*model.ChannelKey, error) {
 	for _, key := range allKeys {
 		if key.Status == model.ChannelKeyStatusEnabled {
 			enabled = append(enabled, key)
+		}
+	}
+	// Middleware has already applied the channel's polling/random selection.
+	// Start there, then try siblings only when that key has no capacity.
+	if preferredKeyID > 0 {
+		for index, key := range enabled {
+			if key.Id == preferredKeyID {
+				ordered := append([]*model.ChannelKey{}, enabled[index:]...)
+				return append(ordered, enabled[:index]...), nil
+			}
 		}
 	}
 	if len(enabled) <= 1 {
@@ -444,9 +454,19 @@ func AdmitChannelKey(c *gin.Context, relayInfo *relaycommon.RelayInfo, channel *
 		return types.NewError(fmt.Errorf("invalid channel key estimated quota: %d", estimatedQuota), types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry())
 	}
 
-	candidates, err := orderedChannelKeys(channel)
+	preferredKeyID, _ := common.GetContextKeyType[int64](c, constant.ContextKeyChannelKeyId)
+	candidates, err := orderedChannelKeys(channel, preferredKeyID)
 	if err != nil {
 		return types.NewError(err, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+	}
+	if relayInfo.ChannelKeyPinned {
+		pinned := make([]*model.ChannelKey, 0, 1)
+		for _, key := range candidates {
+			if relayInfo.ChannelMeta != nil && key.Id == relayInfo.ChannelKeyId && key.Key == relayInfo.ApiKey {
+				pinned = append(pinned, key)
+			}
+		}
+		candidates = pinned
 	}
 	if len(candidates) == 0 {
 		return types.NewErrorWithStatusCode(

@@ -497,7 +497,8 @@ func splitTemplateApplyKeys(channel *model.Channel, raw string) ([]string, error
 	if channel != nil &&
 		channel.Type == constant.ChannelTypeVertexAi &&
 		channel.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
-		return getVertexArrayKeys(raw)
+		keys, _, err := getVertexArrayKeys(raw)
+		return keys, err
 	}
 	keys := make([]string, 0)
 	for _, line := range strings.Split(raw, "\n") {

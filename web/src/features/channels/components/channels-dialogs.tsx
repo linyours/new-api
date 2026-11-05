@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { CHANNEL_TYPE_VLLM, CHANNEL_TYPE_SGLANG } from '../constants'
 import { useChannels } from './channels-provider'
 import { ApplyChannelTemplateDialog } from './dialogs/apply-channel-template-dialog'
 import { BalanceQueryDialog } from './dialogs/balance-query-dialog'
@@ -23,6 +24,7 @@ import { ChannelTestDialog } from './dialogs/channel-test-dialog'
 import { CopyChannelDialog } from './dialogs/copy-channel-dialog'
 import { EditTagDialog } from './dialogs/edit-tag-dialog'
 import { FetchModelsDialog } from './dialogs/fetch-models-dialog'
+import { InferenceStatusDialog } from './dialogs/inference-status-dialog'
 import { ManageChannelTemplatesDialog } from './dialogs/manage-channel-templates-dialog'
 import { MultiKeyManageDialog } from './dialogs/multi-key-manage-dialog'
 import { OllamaModelsDialog } from './dialogs/ollama-models-dialog'
@@ -37,6 +39,21 @@ export function ChannelsDialogs() {
 
   return (
     <>
+      {open === 'inference-status' &&
+        currentRow &&
+        [CHANNEL_TYPE_VLLM, CHANNEL_TYPE_SGLANG].includes(currentRow.type) && (
+          <InferenceStatusDialog
+            key={currentRow.id}
+            provider={
+              currentRow.type === CHANNEL_TYPE_SGLANG ? 'sglang' : 'vllm'
+            }
+            channelId={currentRow.id}
+            channelName={currentRow.name}
+            onClose={() => setOpen(null)}
+            onSyncModels={() => setOpen('fetch-models')}
+            onTestChannel={() => setOpen('test-channel')}
+          />
+        )}
       {/* Channel Create/Update Drawer */}
       <ChannelMutateDrawer
         open={open === 'create-channel' || open === 'update-channel'}
@@ -113,15 +130,7 @@ export function ChannelsDialogs() {
       />
 
       {/* Upstream Model Update Dialog */}
-      <UpstreamUpdateDialog
-        open={upstream.showModal}
-        addModels={upstream.addModels}
-        removeModels={upstream.removeModels}
-        preferredTab={upstream.preferredTab}
-        confirmLoading={upstream.applyLoading}
-        onConfirm={upstream.applyUpdates}
-        onCancel={upstream.closeModal}
-      />
+      <UpstreamUpdateDialog upstream={upstream} />
     </>
   )
 }

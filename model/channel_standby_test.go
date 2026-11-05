@@ -222,7 +222,7 @@ func TestPromotedChannelEntersMemoryRoutingCache(t *testing.T) {
 
 	require.True(t, UpdateChannelStatus(live.Id, "", common.ChannelStatusAutoDisabled, "upstream error"))
 
-	selected, err := GetRandomSatisfiedChannel("default", "gpt-test", 0, "")
+	selected, err := GetRandomSatisfiedChannel("default", "gpt-test", 0, nil)
 	require.NoError(t, err)
 	require.NotNil(t, selected)
 	assert.Equal(t, spare.Id, selected.Id)

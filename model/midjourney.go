@@ -1,5 +1,11 @@
 package model
 
+import (
+	"errors"
+
+	"gorm.io/gorm"
+)
+
 type Midjourney struct {
 	Id          int    `json:"id"`
 	Code        int    `json:"code"`
@@ -23,6 +29,11 @@ type Midjourney struct {
 	Quota       int    `json:"quota"`
 	Buttons     string `json:"buttons"`
 	Properties  string `json:"properties"`
+
+	TokenId          int   `json:"-" gorm:"default:0"`
+	BillingChannelId int   `json:"-" gorm:"default:0"`
+	ChannelKeyId     int64 `json:"-"`
+	ChannelKeyQuota  int   `json:"-"`
 }
 
 // TaskQueryParams 用于包含所有搜索条件的结构体，可以根据需求添加更多字段
@@ -170,6 +181,19 @@ func (midjourney *Midjourney) Update() error {
 	return err
 }
 
+func (midjourney *Midjourney) UpdateBillingState() error {
+	return DB.Model(midjourney).
+		Select("quota", "token_id", "billing_channel_id", "channel_key_id", "channel_key_quota").
+		Updates(midjourney).Error
+}
+
+func (midjourney *Midjourney) GetBillingChannelId() int {
+	if midjourney.BillingChannelId > 0 {
+		return midjourney.BillingChannelId
+	}
+	return midjourney.ChannelId
+}
+
 // UpdateWithStatus performs a conditional UPDATE guarded by fromStatus (CAS).
 // Returns (true, nil) if this caller won the update, (false, nil) if
 // another process already moved the task out of fromStatus.
@@ -230,4 +254,43 @@ func CountAllUserTask(userId int, queryParams TaskQueryParams) int64 {
 	}
 	_ = query.Count(&total).Error
 	return total
+}
+
+// RefundChannelKeyQuota clears the durable refund marker in the same transaction
+// as the key adjustment, so a database error or a stale task cannot refund twice.
+func (midjourney *Midjourney) RefundChannelKeyQuota(reason string) error {
+	var channelID int
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var current Midjourney
+		if err := lockForUpdate(tx).Select("id", "mj_id", "channel_key_id", "channel_key_quota").First(&current, midjourney.Id).Error; err != nil {
+			return err
+		}
+		if current.ChannelKeyQuota <= 0 || current.ChannelKeyId <= 0 {
+			return nil
+		}
+		var key ChannelKey
+		if err := lockForUpdate(tx).First(&key, current.ChannelKeyId).Error; err != nil {
+			return err
+		}
+		channelID = key.ChannelId
+		if err := adjustChannelKeyQuota(tx, &key, -int64(current.ChannelKeyQuota), "midjourney:"+current.MjId, "task failed: "+reason); err != nil {
+			return err
+		}
+		result := tx.Model(&Midjourney{}).Where("id = ? AND channel_key_quota = ?", current.Id, current.ChannelKeyQuota).Update("channel_key_quota", 0)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errors.New("Midjourney key refund state changed")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	midjourney.ChannelKeyQuota = 0
+	if channelID > 0 {
+		return refreshChannelKeyDerivedState(channelID)
+	}
+	return nil
 }

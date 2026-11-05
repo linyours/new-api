@@ -7,7 +7,8 @@ published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version.
 */
 import assert from 'node:assert/strict'
-import { describe, it } from 'node:test'
+
+import { describe, it } from 'vitest'
 
 import { parseModelRpmLimits, unusedModelName } from '../model-rpm-limits'
 

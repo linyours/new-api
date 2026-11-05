@@ -1695,60 +1695,68 @@ func AdjustChannelKeyQuota(keyId int64, delta int64, requestId, reason string) e
 			return err
 		}
 		channelId = key.ChannelId
-		if delta < 0 && key.QuotaUsed < -delta {
-			return errors.New("channel key quota adjustment would underflow")
-		}
-		if delta > 0 && (delta > math.MaxInt64-key.QuotaUsed || delta > math.MaxInt64-key.LifetimeQuota) {
-			return errors.New("channel key quota adjustment would overflow")
-		}
-
-		key.QuotaUsed += delta
-		if delta > 0 {
-			key.LifetimeQuota += delta
-		}
-		limit, err := effectiveChannelKeyQuotaLimit(tx, &key)
-		if err != nil {
-			return err
-		}
-		now := common.GetTimestamp()
-		if limit > 0 && key.QuotaUsed >= limit && key.Status == ChannelKeyStatusEnabled {
-			key.Status = ChannelKeyStatusQuotaExhausted
-			key.DisabledReason = "quota limit exhausted"
-			key.DisabledAt = now
-			key.ExhaustedAt = now
-			key.ArchivedAt = now
-			if err := archiveExhaustedChannelKey(
-				tx, &key, limit, requestId, key.DisabledReason, now,
-			); err != nil {
-				return err
-			}
-		} else if key.Status == ChannelKeyStatusQuotaExhausted && (limit == 0 || key.QuotaUsed < limit) {
-			key.Status = ChannelKeyStatusEnabled
-			key.DisabledReason = ""
-			key.DisabledAt = 0
-			key.ExhaustedAt = 0
-			key.ArchivedAt = 0
-			if err := markChannelKeyArchivesRestored(tx, key.Id, now); err != nil {
-				return err
-			}
-		}
-		key.UpdatedAt = now
-		if err := tx.Save(&key).Error; err != nil {
-			return err
-		}
-		return tx.Create(&ChannelKeyEvent{
-			ChannelId:    key.ChannelId,
-			ChannelKeyId: key.Id,
-			EventType:    ChannelKeyEventQuotaAdjusted,
-			QuotaUsed:    key.QuotaUsed,
-			QuotaLimit:   limit,
-			RequestId:    requestId,
-			Reason:       reason,
-			CreatedAt:    now,
-		}).Error
+		return adjustChannelKeyQuota(tx, &key, delta, requestId, reason)
 	})
 	if err != nil {
 		return err
 	}
 	return refreshChannelKeyDerivedState(channelId)
+}
+
+// adjustChannelKeyQuota applies accounting and archival changes while the caller holds the key row lock.
+func adjustChannelKeyQuota(tx *gorm.DB, key *ChannelKey, delta int64, requestId, reason string) error {
+	if delta == math.MinInt64 {
+		return errors.New("channel key quota adjustment underflow")
+	}
+	if delta < 0 && key.QuotaUsed < -delta {
+		return errors.New("channel key quota adjustment would underflow")
+	}
+	if delta > 0 && (delta > math.MaxInt64-key.QuotaUsed || delta > math.MaxInt64-key.LifetimeQuota) {
+		return errors.New("channel key quota adjustment would overflow")
+	}
+
+	key.QuotaUsed += delta
+	if delta > 0 {
+		key.LifetimeQuota += delta
+	}
+	limit, err := effectiveChannelKeyQuotaLimit(tx, key)
+	if err != nil {
+		return err
+	}
+	now := common.GetTimestamp()
+	if limit > 0 && key.QuotaUsed >= limit && key.Status == ChannelKeyStatusEnabled {
+		key.Status = ChannelKeyStatusQuotaExhausted
+		key.DisabledReason = "quota limit exhausted"
+		key.DisabledAt = now
+		key.ExhaustedAt = now
+		key.ArchivedAt = now
+		if err := archiveExhaustedChannelKey(
+			tx, key, limit, requestId, key.DisabledReason, now,
+		); err != nil {
+			return err
+		}
+	} else if key.Status == ChannelKeyStatusQuotaExhausted && (limit == 0 || key.QuotaUsed < limit) {
+		key.Status = ChannelKeyStatusEnabled
+		key.DisabledReason = ""
+		key.DisabledAt = 0
+		key.ExhaustedAt = 0
+		key.ArchivedAt = 0
+		if err := markChannelKeyArchivesRestored(tx, key.Id, now); err != nil {
+			return err
+		}
+	}
+	key.UpdatedAt = now
+	if err := tx.Save(key).Error; err != nil {
+		return err
+	}
+	return tx.Create(&ChannelKeyEvent{
+		ChannelId:    key.ChannelId,
+		ChannelKeyId: key.Id,
+		EventType:    ChannelKeyEventQuotaAdjusted,
+		QuotaUsed:    key.QuotaUsed,
+		QuotaLimit:   limit,
+		RequestId:    requestId,
+		Reason:       reason,
+		CreatedAt:    now,
+	}).Error
 }

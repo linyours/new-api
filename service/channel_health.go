@@ -633,7 +633,7 @@ func notifyChannelHealthAlert(channelID int, channelName string, snap ChannelHea
 		webhookURL != "",
 	))
 	sent := sendDedicatedChannelHealthWebhook(notifyType, subject, content)
-	NotifyRootUser(notifyType, subject, content)
+	NotifyChannelWatchers(notifyType, func(_ string) (string, string) { return subject, content })
 	if webhookURL == "" {
 		return true
 	}
