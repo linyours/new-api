@@ -40,6 +40,9 @@ type applyChannelTemplateRequest struct {
 	Keys             string                        `json:"keys"`
 	Items            []applyChannelTemplateKeyItem `json:"items"`
 	NameSuffixLength *int                          `json:"name_suffix_length"`
+	// Destination is "enabled", "standby", or empty.
+	// Empty keeps the status stored on the template.
+	Destination string `json:"destination"`
 }
 
 type applyChannelTemplateEntry struct {
@@ -176,11 +179,16 @@ func UpdateChannelTemplate(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	fresh, err := model.GetChannelTemplateById(template.Id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	recordManageAudit(c, "channel.template.update", map[string]interface{}{
-		"id":   template.Id,
-		"name": template.Name,
+		"id":   fresh.Id,
+		"name": fresh.Name,
 	})
-	common.ApiSuccess(c, template)
+	common.ApiSuccess(c, fresh)
 }
 
 func DeleteChannelTemplate(c *gin.Context) {
@@ -248,6 +256,11 @@ func ApplyChannelTemplate(c *gin.Context) {
 		suffixLength = *req.NameSuffixLength
 	}
 	suffixLength = model.NormalizeChannelTemplateNameSuffixLength(suffixLength)
+	destinationStatus, err := channelTemplateDestinationStatus(req.Destination)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 
 	reserved := make(map[string]struct{}, len(entries))
 	channels := make([]model.Channel, 0, len(entries))
@@ -256,6 +269,10 @@ func ApplyChannelTemplate(c *gin.Context) {
 	for _, entry := range entries {
 		channel := *base
 		channel.Key = entry.Key
+		channel.TemplateId = template.Id
+		if destinationStatus != 0 {
+			channel.Status = destinationStatus
+		}
 		channel.CreatedTime = now
 		channel.CreatedBy = operatorId
 		channel.UpdatedBy = operatorId
@@ -302,7 +319,7 @@ func ApplyChannelTemplate(c *gin.Context) {
 	if len(cfg.ModelRpmLimits) > 0 {
 		for _, channelId := range createdIds {
 			if err := model.ApplyChannelKeyModelRpmLimits(channelId, cfg.ModelRpmLimits); err != nil {
-				if _, delErr := model.BatchDeleteChannels(createdIds); delErr != nil {
+				if _, delErr := model.DeleteChannelsWithoutStandbyPromote(createdIds); delErr != nil {
 					common.SysError("failed to roll back template-created channels: " + delErr.Error())
 				}
 				common.ApiError(c, err)
@@ -311,16 +328,36 @@ func ApplyChannelTemplate(c *gin.Context) {
 		}
 	}
 
+	promoted, promoteErr := model.PromoteStandbyPool()
+	if promoteErr != nil {
+		common.SysError("standby promotion after template apply failed: " + promoteErr.Error())
+	}
 	model.InitChannelCache()
 	recordManageAudit(c, "channel.template.apply", map[string]interface{}{
-		"id":    template.Id,
-		"name":  template.Name,
-		"count": len(created),
+		"id":          template.Id,
+		"name":        template.Name,
+		"count":       len(created),
+		"destination": strings.TrimSpace(req.Destination),
+		"promoted":    promoted,
 	})
 	common.ApiSuccess(c, gin.H{
 		"count":    len(created),
+		"promoted": promoted,
 		"channels": created,
 	})
+}
+
+func channelTemplateDestinationStatus(destination string) (int, error) {
+	switch strings.ToLower(strings.TrimSpace(destination)) {
+	case "":
+		return 0, nil
+	case "enabled":
+		return common.ChannelStatusEnabled, nil
+	case "standby":
+		return common.ChannelStatusStandby, nil
+	default:
+		return 0, errors.New("invalid template destination")
+	}
 }
 
 func buildChannelTemplateFromChannel(channel *model.Channel, name, description string, suffixLength int) (*model.ChannelTemplate, error) {

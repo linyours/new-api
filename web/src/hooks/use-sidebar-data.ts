@@ -26,6 +26,7 @@ import {
   FileText,
   FlaskConical,
   Key,
+  Layers,
   LayoutDashboard,
   ListTodo,
   MessageSquare,
@@ -131,6 +132,11 @@ export function useSidebarData(): SidebarData {
             title: t('Channels'),
             url: '/channels',
             icon: Radio,
+          },
+          {
+            title: t('Standby pool'),
+            url: '/standby-pool',
+            icon: Layers,
           },
           {
             title: t('Channel creator usage'),

@@ -28,8 +28,16 @@ type ChannelTemplate struct {
 	ChannelType      int    `json:"channel_type"`
 	Config           string `json:"config" gorm:"type:text;not null"`
 	NameSuffixLength int    `json:"name_suffix_length"`
-	CreatedTime      int64  `json:"created_time" gorm:"bigint"`
-	UpdatedTime      int64  `json:"updated_time" gorm:"bigint"`
+	// Unused. Promotion is one shared rule on StandbyPoolSetting.
+	StandbyPromoteEnabled   bool  `json:"standby_promote_enabled"`
+	StandbyPromoteThreshold int   `json:"standby_promote_threshold"`
+	StandbyPromoteBatch     int   `json:"standby_promote_batch"`
+	CreatedTime             int64 `json:"created_time" gorm:"bigint"`
+	UpdatedTime             int64 `json:"updated_time" gorm:"bigint"`
+
+	EnabledCount     int `json:"enabled_count" gorm:"-"`
+	StandbyCount     int `json:"standby_count" gorm:"-"`
+	UnavailableCount int `json:"unavailable_count" gorm:"-"`
 }
 
 // ChannelTemplateConfig is the persisted channel snapshot. It intentionally
@@ -294,8 +302,13 @@ func AllocateUniqueChannelName(baseName string, reserved map[string]struct{}) (s
 
 func GetAllChannelTemplates() ([]*ChannelTemplate, error) {
 	var templates []*ChannelTemplate
-	err := DB.Order("updated_time desc").Find(&templates).Error
-	return templates, err
+	if err := DB.Order("updated_time desc").Find(&templates).Error; err != nil {
+		return nil, err
+	}
+	if err := attachChannelTemplatePoolCounts(templates); err != nil {
+		return nil, err
+	}
+	return templates, nil
 }
 
 func GetChannelTemplateById(id int) (*ChannelTemplate, error) {
@@ -304,6 +317,9 @@ func GetChannelTemplateById(id int) (*ChannelTemplate, error) {
 	}
 	template := &ChannelTemplate{}
 	if err := DB.First(template, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	if err := attachChannelTemplatePoolCounts([]*ChannelTemplate{template}); err != nil {
 		return nil, err
 	}
 	return template, nil
@@ -372,6 +388,57 @@ func ApplyChannelKeyModelRpmLimits(channelId int, limits ChannelKeyModelRpmLimit
 		return err
 	}
 	return ReloadChannelKeyCache(channelId)
+}
+
+type channelTemplateStatusCount struct {
+	TemplateId int   `gorm:"column:template_id"`
+	Status     int   `gorm:"column:status"`
+	Total      int64 `gorm:"column:total"`
+}
+
+func attachChannelTemplatePoolCounts(templates []*ChannelTemplate) error {
+	if len(templates) == 0 {
+		return nil
+	}
+	ids := make([]int, 0, len(templates))
+	byID := make(map[int]*ChannelTemplate, len(templates))
+	for _, template := range templates {
+		if template == nil || template.Id <= 0 {
+			continue
+		}
+		template.EnabledCount = 0
+		template.StandbyCount = 0
+		template.UnavailableCount = 0
+		ids = append(ids, template.Id)
+		byID[template.Id] = template
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	var rows []channelTemplateStatusCount
+	if err := DB.Model(&Channel{}).
+		Select("template_id, status, COUNT(*) as total").
+		Where("template_id IN ?", ids).
+		Group("template_id, status").
+		Scan(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		template := byID[row.TemplateId]
+		if template == nil {
+			continue
+		}
+		switch row.Status {
+		case common.ChannelStatusEnabled:
+			template.EnabledCount = int(row.Total)
+		case common.ChannelStatusStandby:
+			template.StandbyCount = int(row.Total)
+		case common.ChannelStatusManuallyDisabled, common.ChannelStatusAutoDisabled:
+			template.UnavailableCount += int(row.Total)
+		}
+	}
+	return nil
 }
 
 func cloneStringPtr(value *string) *string {

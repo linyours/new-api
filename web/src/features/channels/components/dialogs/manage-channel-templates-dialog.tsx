@@ -5,6 +5,16 @@ This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
 published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Trash2 } from 'lucide-react'
@@ -113,6 +123,7 @@ export function ManageChannelTemplatesDialog({
         description={t(
           'Templates store channel settings without keys. Use a template to create new channels from a key list.'
         )}
+        contentClassName='sm:max-w-xl'
         contentHeight='auto'
         bodyClassName='space-y-3'
         footer={
@@ -136,11 +147,11 @@ export function ManageChannelTemplatesDialog({
             </p>
           ) : null}
           {templates.map((template) => (
-            <div
+            <section
               key={template.id}
-              className='flex flex-col gap-2 rounded-md border p-3 sm:flex-row sm:items-center'
+              className='bg-card flex flex-col gap-3 rounded-xl border p-4 shadow-sm sm:flex-row sm:items-start'
             >
-              <div className='min-w-0 flex-1 space-y-1'>
+              <div className='min-w-0 flex-1 space-y-2'>
                 <Input
                   maxLength={64}
                   value={drafts[template.id] ?? template.name}
@@ -152,10 +163,15 @@ export function ManageChannelTemplatesDialog({
                   }
                   onBlur={() => handleRename(template)}
                   disabled={savingId === template.id}
+                  aria-label={t('Template')}
                 />
                 <p className='text-muted-foreground truncate text-xs'>
-                  {t(getChannelTypeLabel(template.channel_type))}
-                  {template.description ? ` · ${template.description}` : ''}
+                  <span className='bg-muted text-foreground rounded-full px-2 py-0.5'>
+                    {t(getChannelTypeLabel(template.channel_type))}
+                  </span>
+                  {template.description ? (
+                    <span> · {template.description}</span>
+                  ) : null}
                 </p>
               </div>
               <div className='flex shrink-0 gap-2'>
@@ -183,7 +199,7 @@ export function ManageChannelTemplatesDialog({
                   <Trash2 className='h-4 w-4' />
                 </Button>
               </div>
-            </div>
+            </section>
           ))}
         </div>
       </Dialog>

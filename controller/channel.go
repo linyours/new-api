@@ -58,6 +58,8 @@ func parseStatusFilter(statusParam string) int {
 	switch strings.ToLower(statusParam) {
 	case "enabled", "1":
 		return common.ChannelStatusEnabled
+	case "standby", "4":
+		return common.ChannelStatusStandby
 	case "disabled", "0":
 		return 0
 	default:
@@ -73,13 +75,29 @@ func clearChannelInfo(channel *model.Channel) {
 }
 
 func applyChannelStatusFilter(query *gorm.DB, statusFilter int) *gorm.DB {
-	if statusFilter == common.ChannelStatusEnabled {
+	switch statusFilter {
+	case common.ChannelStatusEnabled:
 		return query.Where("status = ?", common.ChannelStatusEnabled)
+	case common.ChannelStatusStandby:
+		return query.Where("status = ?", common.ChannelStatusStandby)
+	case 0:
+		return query.Where("status = ? OR status = ?", common.ChannelStatusManuallyDisabled, common.ChannelStatusAutoDisabled)
+	default:
+		return query
 	}
-	if statusFilter == 0 {
-		return query.Where("status != ?", common.ChannelStatusEnabled)
+}
+
+func channelMatchesStatusFilter(status int, statusFilter int) bool {
+	switch statusFilter {
+	case common.ChannelStatusEnabled:
+		return status == common.ChannelStatusEnabled
+	case common.ChannelStatusStandby:
+		return status == common.ChannelStatusStandby
+	case 0:
+		return status == common.ChannelStatusManuallyDisabled || status == common.ChannelStatusAutoDisabled
+	default:
+		return true
 	}
-	return query
 }
 
 func buildChannelListQuery(group string, statusFilter int, typeFilter int) *gorm.DB {
@@ -344,16 +362,12 @@ func SearchChannels(c *gin.Context) {
 		channelData = channels
 	}
 
-	if statusFilter == common.ChannelStatusEnabled || statusFilter == 0 {
+	if statusFilter != -1 {
 		filtered := make([]*model.Channel, 0, len(channelData))
 		for _, ch := range channelData {
-			if statusFilter == common.ChannelStatusEnabled && ch.Status != common.ChannelStatusEnabled {
-				continue
+			if channelMatchesStatusFilter(ch.Status, statusFilter) {
+				filtered = append(filtered, ch)
 			}
-			if statusFilter == 0 && ch.Status == common.ChannelStatusEnabled {
-				continue
-			}
-			filtered = append(filtered, ch)
 		}
 		channelData = filtered
 	}

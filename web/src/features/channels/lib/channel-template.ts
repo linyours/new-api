@@ -82,22 +82,198 @@ export type ChannelTemplateApplyItem = {
   proxy: string
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function vertexAccountList(parsed: unknown): string[] {
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) return []
+    const accounts: string[] = []
+    for (const item of parsed) {
+      if (!isJsonObject(item)) return []
+      accounts.push(JSON.stringify(item))
+    }
+    return accounts
+  }
+  if (!isJsonObject(parsed)) return []
+  return [JSON.stringify(parsed)]
+}
+
+/**
+ * Parse a Vertex service-account file or paste.
+ * Accepts one JSON object, or a JSON array of objects.
+ * Invalid JSON throws. Any other JSON shape returns an empty list.
+ */
+export function parseVertexServiceAccountText(raw: string): string[] {
+  const trimmed = raw.trim()
+  if (!trimmed) return []
+  return vertexAccountList(JSON.parse(trimmed) as unknown)
+}
+
+/** Rebuild the JSON array payload expected by template apply. */
+export function serializeVertexTemplateKeys(keys: string[]): string {
+  return JSON.stringify(
+    keys.map((key) => {
+      try {
+        return JSON.parse(key) as unknown
+      } catch {
+        return key
+      }
+    })
+  )
+}
+
+/**
+ * Replace one row with the first account and insert the rest after it.
+ * The original row keeps its proxy; inserted rows start with an empty proxy.
+ */
+export function insertVertexAccountsAtRow<T extends { key: string }>(
+  rows: T[],
+  index: number,
+  accounts: string[],
+  createRow: (account: string) => T
+): T[] {
+  if (accounts.length === 0 || index < 0 || index >= rows.length) return rows
+  const first = { ...rows[index], key: accounts[0] }
+  const extras = accounts.slice(1).map((account) => createRow(account))
+  return [...rows.slice(0, index), first, ...extras, ...rows.slice(index + 1)]
+}
+
+export type VertexTemplateTextRow = {
+  key: string
+  draft: string
+  proxy: string
+  jsonError: boolean
+}
+
+/**
+ * Store pasted Vertex JSON on one row.
+ * One object stays on that row. An array is split into following rows and the
+ * pasted text is cleared so it cannot be submitted twice.
+ */
+export function applyVertexTextToRow<T extends VertexTemplateTextRow>(
+  rows: T[],
+  index: number,
+  raw: string,
+  createRow: (account: string) => T
+): T[] {
+  if (index < 0 || index >= rows.length) return rows
+  const current = rows[index]
+  const trimmed = raw.trim()
+  if (!trimmed) {
+    const next = [...rows]
+    next[index] = { ...current, draft: raw, key: '', jsonError: false }
+    return next
+  }
+
+  let accounts: string[] = []
+  let invalid = false
+  try {
+    accounts = parseVertexServiceAccountText(trimmed)
+    invalid = accounts.length === 0
+  } catch {
+    invalid = true
+  }
+  if (invalid) {
+    const next = [...rows]
+    next[index] = { ...current, draft: raw, key: '', jsonError: true }
+    return next
+  }
+
+  if (accounts.length === 1) {
+    const pretty = JSON.stringify(JSON.parse(accounts[0]), null, 2)
+    const next = [...rows]
+    next[index] = {
+      ...current,
+      draft: raw.includes('\n') ? raw : pretty,
+      key: accounts[0],
+      jsonError: false,
+    }
+    return next
+  }
+
+  const inserted = insertVertexAccountsAtRow(rows, index, accounts, createRow)
+  inserted[index] = { ...inserted[index], draft: '', jsonError: false }
+  return inserted
+}
+
+/**
+ * Resolve rows into submit items. Non-empty text is parsed again and must be
+ * valid JSON. A row with invalid text fails the whole result.
+ */
+export function validateVertexTemplateRows<
+  T extends { key: string; draft: string; proxy: string },
+>(rows: T[]): { items: ChannelTemplateApplyItem[]; invalid: boolean } {
+  const items: ChannelTemplateApplyItem[] = []
+  let invalid = false
+  for (const row of rows) {
+    const draft = row.draft.trim()
+    if (draft) {
+      try {
+        const accounts = parseVertexServiceAccountText(draft)
+        if (accounts.length === 0) {
+          invalid = true
+          continue
+        }
+        accounts.forEach((account, accountIndex) => {
+          items.push({
+            key: account,
+            proxy: accountIndex === 0 ? row.proxy.trim() : '',
+          })
+        })
+      } catch {
+        invalid = true
+      }
+      continue
+    }
+
+    const key = row.key.trim()
+    if (!key) continue
+    try {
+      const accounts = parseVertexServiceAccountText(key)
+      if (accounts.length !== 1) {
+        invalid = true
+        continue
+      }
+      items.push({ key: accounts[0], proxy: row.proxy.trim() })
+    } catch {
+      invalid = true
+    }
+  }
+  if (invalid) return { items: [], invalid: true }
+  return { items, invalid: false }
+}
+
+/** Append newly parsed Vertex accounts without duplicating the same identity. */
+export function mergeVertexTemplateKeys(
+  existingRaw: string,
+  incoming: string[]
+): string[] {
+  const existing = splitTemplateApplyKeys(existingRaw, { vertexJson: true })
+  const seen = new Set<string>()
+  const merged: string[] = []
+  for (const key of [...existing, ...incoming]) {
+    const id = channelTemplateKeyIdentity(key) || key
+    if (seen.has(id)) continue
+    seen.add(id)
+    merged.push(key)
+  }
+  return merged
+}
+
 export function splitTemplateApplyKeys(
   raw: string,
   options?: { vertexJson?: boolean }
 ): string[] {
   const trimmed = raw.trim()
   if (!trimmed) return []
-  if (options?.vertexJson && trimmed.startsWith('[')) {
+  if (
+    options?.vertexJson &&
+    (trimmed.startsWith('[') || trimmed.startsWith('{'))
+  ) {
     try {
-      const parsed = JSON.parse(trimmed) as unknown
-      if (!Array.isArray(parsed)) return []
-      return parsed
-        .map((item) => {
-          if (typeof item === 'string') return item.trim()
-          return JSON.stringify(item)
-        })
-        .filter(Boolean)
+      return parseVertexServiceAccountText(trimmed)
     } catch {
       return []
     }

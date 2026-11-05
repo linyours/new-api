@@ -359,3 +359,87 @@ func CacheUpdateChannel(channel *Channel) {
 	channelSyncLock.Unlock()
 	InvalidatePricingCache()
 }
+
+// cacheEnableChannels puts newly promoted channels into the in-memory routing
+// index. Callers must already have committed the enabled status and abilities.
+// A full InitChannelCache is not required, and must not run while channelStatusLock
+// is held by UpdateChannelStatus.
+func cacheEnableChannels(channels []Channel) {
+	if !common.MemoryCacheEnabled || len(channels) == 0 {
+		return
+	}
+	channelSyncLock.Lock()
+	if channelsIDM == nil || group2model2channels == nil {
+		channelSyncLock.Unlock()
+		return
+	}
+	for i := range channels {
+		channel := channels[i]
+		if channel.Id <= 0 || channel.Status != common.ChannelStatusEnabled {
+			continue
+		}
+		if existing, ok := channelsIDM[channel.Id]; ok && existing != nil &&
+			existing.ChannelInfo.IsMultiKey &&
+			existing.ChannelInfo.MultiKeyMode == constant.MultiKeyModePolling {
+			channel.ChannelInfo.MultiKeyPollingIndex = existing.ChannelInfo.MultiKeyPollingIndex
+		}
+		stored := channel
+		channelsIDM[stored.Id] = &stored
+		if stored.Type == constant.ChannelTypeAdvancedCustom {
+			if channel2advancedCustomConfig == nil {
+				channel2advancedCustomConfig = make(map[int]*dto.AdvancedCustomConfig)
+			}
+			if config := stored.GetOtherSettings().AdvancedCustom; config != nil {
+				channel2advancedCustomConfig[stored.Id] = config
+			}
+		}
+		insertEnabledChannelRoutingLocked(&stored)
+	}
+	channelSyncLock.Unlock()
+	InvalidatePricingCache()
+}
+
+func insertEnabledChannelRoutingLocked(channel *Channel) {
+	if channel == nil || group2model2channels == nil {
+		return
+	}
+	groups := strings.Split(channel.Group, ",")
+	models := strings.Split(channel.Models, ",")
+	for _, group := range groups {
+		if group2model2channels[group] == nil {
+			group2model2channels[group] = make(map[string][]int)
+		}
+		for _, modelName := range models {
+			list := group2model2channels[group][modelName]
+			already := false
+			for _, id := range list {
+				if id == channel.Id {
+					already = true
+					break
+				}
+			}
+			if already {
+				continue
+			}
+			priority := channel.GetPriority()
+			inserted := false
+			for index, id := range list {
+				otherPriority := int64(0)
+				if other, ok := channelsIDM[id]; ok && other != nil {
+					otherPriority = other.GetPriority()
+				}
+				if priority > otherPriority {
+					list = append(list, 0)
+					copy(list[index+1:], list[index:])
+					list[index] = channel.Id
+					inserted = true
+					break
+				}
+			}
+			if !inserted {
+				list = append(list, channel.Id)
+			}
+			group2model2channels[group][modelName] = list
+		}
+	}
+}

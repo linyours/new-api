@@ -477,8 +477,41 @@ export interface ChannelTemplate {
   channel_type: number
   config: string
   name_suffix_length: number
+  standby_promote_enabled?: boolean
+  standby_promote_threshold?: number
+  standby_promote_batch?: number
+  enabled_count?: number
+  standby_count?: number
+  unavailable_count?: number
   created_time: number
   updated_time: number
+}
+
+export interface StandbyPool {
+  promote_enabled: boolean
+  promote_threshold: number
+  promote_batch: number
+  enabled_count: number
+  standby_count: number
+  unavailable_count: number
+}
+
+export interface StandbyPoolChannel {
+  id: number
+  name: string
+  type: number
+  status: number
+  models: string
+  group: string
+  template_id: number
+  template_name: string
+}
+
+export interface StandbyPoolChannelList {
+  items: StandbyPoolChannel[]
+  total: number
+  page: number
+  page_size: number
 }
 
 export interface ApplyChannelTemplateResponse {
@@ -486,6 +519,7 @@ export interface ApplyChannelTemplateResponse {
   message?: string
   data?: {
     count: number
+    promoted?: number
     channels: Array<{ id: number; name: string }>
   }
 }

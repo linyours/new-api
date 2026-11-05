@@ -59,6 +59,9 @@ type Channel struct {
 	ParamOverride     *string `json:"param_override" gorm:"type:text"`
 	HeaderOverride    *string `json:"header_override" gorm:"type:text"`
 	Remark            *string `json:"remark" gorm:"type:varchar(255)" validate:"max=255"`
+	// TemplateId ties a channel to the template it was created from.
+	// Zero means the channel is not a member of a standby pool.
+	TemplateId int `json:"template_id" gorm:"index;default:0"`
 	// add after v0.8.5
 	ChannelInfo ChannelInfo `json:"channel_info" gorm:"type:json"`
 
@@ -466,14 +469,38 @@ func BatchInsertChannels(channels []Channel) error {
 }
 
 func BatchDeleteChannels(ids []int) (int64, error) {
+	return deleteChannelsByIDs(ids, true)
+}
+
+// DeleteChannelsWithoutStandbyPromote removes channels without refilling a
+// template pool. Template apply uses it to roll back a failed import.
+func DeleteChannelsWithoutStandbyPromote(ids []int) (int64, error) {
+	return deleteChannelsByIDs(ids, false)
+}
+
+func deleteChannelsByIDs(ids []int, promote bool) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	// 使用事务 分批删除channel表和abilities表
+	var templateIDs []int
+	if promote {
+		if err := DB.Model(&Channel{}).
+			Where("id IN ? AND status = ? AND template_id > 0", ids, common.ChannelStatusEnabled).
+			Pluck("template_id", &templateIDs).Error; err != nil {
+			return 0, err
+		}
+	}
+
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return 0, tx.Error
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
 	var deletedCount int64
 	for _, chunk := range lo.Chunk(ids, 200) {
 		if err := deleteChannelKeyData(tx, chunk); err != nil {
@@ -493,6 +520,11 @@ func BatchDeleteChannels(ids []int) (int64, error) {
 	}
 	if err := tx.Commit().Error; err != nil {
 		return 0, err
+	}
+	if promote && len(templateIDs) > 0 {
+		if _, promoteErr := PromoteStandbyPool(); promoteErr != nil {
+			common.SysLog(fmt.Sprintf("standby promotion after channel delete failed: error=%v", promoteErr))
+		}
 	}
 	return deletedCount, nil
 }
@@ -654,15 +686,8 @@ func (channel *Channel) UpdateBalance(balance float64) {
 }
 
 func (channel *Channel) Delete() error {
-	return DB.Transaction(func(tx *gorm.DB) error {
-		if err := deleteChannelKeyData(tx, []int{channel.Id}); err != nil {
-			return err
-		}
-		if err := tx.Where("channel_id = ?", channel.Id).Delete(&Ability{}).Error; err != nil {
-			return err
-		}
-		return tx.Delete(channel).Error
-	})
+	_, err := deleteChannelsByIDs([]int{channel.Id}, true)
+	return err
 }
 
 var channelStatusLock sync.Mutex
@@ -813,9 +838,10 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 		if channel.Status == status {
 			return false
 		}
+		beforeStatus := channel.Status
+		templateID := channel.TemplateId
 
 		if channel.ChannelInfo.IsMultiKey {
-			beforeStatus := channel.Status
 			// Protect map writes with the same per-channel lock used by readers
 			pollingLock := GetChannelPollingLock(channelId)
 			pollingLock.Lock()
@@ -843,26 +869,56 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 				return false
 			}
 		}
+		if beforeStatus == common.ChannelStatusEnabled &&
+			channel.Status != common.ChannelStatusEnabled &&
+			templateID > 0 {
+			if _, promoteErr := PromoteStandbyPool(); promoteErr != nil {
+				common.SysLog(fmt.Sprintf("standby promotion failed: template_id=%d, error=%v", templateID, promoteErr))
+			}
+		}
 	}
 	return true
 }
 
 func EnableChannelByTag(tag string) error {
-	err := DB.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusEnabled).Error
+	// Standby members stay in the pool. A tag-wide enable must not dump them into routing.
+	err := DB.Model(&Channel{}).
+		Where("tag = ? AND status <> ?", tag, common.ChannelStatusStandby).
+		Update("status", common.ChannelStatusEnabled).Error
 	if err != nil {
 		return err
 	}
-	err = UpdateAbilityStatusByTag(tag, true)
-	return err
+	var ids []int
+	if err := DB.Model(&Channel{}).
+		Where("tag = ? AND status = ?", tag, common.ChannelStatusEnabled).
+		Pluck("id", &ids).Error; err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return DB.Model(&Ability{}).Where("channel_id IN ?", ids).Update("enabled", true).Error
 }
 
 func DisableChannelByTag(tag string) error {
-	err := DB.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusManuallyDisabled).Error
+	// Tag shutdown stops channels that are already in service. It does not
+	// consume the standby pool, and it does not promote replacements.
+	err := DB.Model(&Channel{}).
+		Where("tag = ? AND status <> ?", tag, common.ChannelStatusStandby).
+		Update("status", common.ChannelStatusManuallyDisabled).Error
 	if err != nil {
 		return err
 	}
-	err = UpdateAbilityStatusByTag(tag, false)
-	return err
+	var ids []int
+	if err := DB.Model(&Channel{}).
+		Where("tag = ? AND status = ?", tag, common.ChannelStatusManuallyDisabled).
+		Pluck("id", &ids).Error; err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return DB.Model(&Ability{}).Where("channel_id IN ?", ids).Update("enabled", false).Error
 }
 
 func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *string, group *string, priority *int64, weight *uint, paramOverride *string, headerOverride *string) error {

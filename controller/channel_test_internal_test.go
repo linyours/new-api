@@ -383,6 +383,7 @@ func TestSelectChannelsForAutomaticTestPassiveRecoveryOnlyUsesAutoDisabled(t *te
 		{Id: 1, Status: common.ChannelStatusEnabled},
 		{Id: 2, Status: common.ChannelStatusAutoDisabled},
 		{Id: 3, Status: common.ChannelStatusManuallyDisabled},
+		{Id: 4, Status: common.ChannelStatusStandby},
 	}
 
 	selected := selectChannelsForAutomaticTest(channels, operation_setting.ChannelTestModePassiveRecovery)
@@ -396,6 +397,7 @@ func TestSelectChannelsForAutomaticTestScheduledSkipsManualDisabled(t *testing.T
 		{Id: 1, Status: common.ChannelStatusEnabled},
 		{Id: 2, Status: common.ChannelStatusAutoDisabled},
 		{Id: 3, Status: common.ChannelStatusManuallyDisabled},
+		{Id: 4, Status: common.ChannelStatusStandby},
 	}
 
 	selected := selectChannelsForAutomaticTest(channels, operation_setting.ChannelTestModeScheduledAll)

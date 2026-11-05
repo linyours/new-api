@@ -456,6 +456,13 @@ func SyncChannelKeyStatusSummary(channelId int) error {
 			}
 		}
 	}
+	if previousStatus == common.ChannelStatusEnabled &&
+		updatedChannel.Status != common.ChannelStatusEnabled &&
+		updatedChannel.TemplateId > 0 {
+		if _, promoteErr := PromoteStandbyPool(); promoteErr != nil {
+			common.SysLog(fmt.Sprintf("standby promotion failed: template_id=%d, error=%v", updatedChannel.TemplateId, promoteErr))
+		}
+	}
 	return nil
 }
 

@@ -44,6 +44,8 @@ import type {
   TagOperationParams,
   ChannelTemplate,
   ApplyChannelTemplateResponse,
+  StandbyPool,
+  StandbyPoolChannelList,
 } from './types'
 
 const channelActionConfig = (
@@ -723,6 +725,45 @@ export async function getPrefillGroups(
   return res.data
 }
 
+export const standbyPoolQueryKey = ['standby-pool'] as const
+
+export async function getStandbyPool(): Promise<{
+  success: boolean
+  message?: string
+  data?: StandbyPool
+}> {
+  const res = await api.get('/api/channel/standby_pool', channelActionConfig())
+  return res.data
+}
+
+export async function getStandbyPoolChannels(params: {
+  p: number
+  page_size: number
+}): Promise<{
+  success: boolean
+  message?: string
+  data?: StandbyPoolChannelList
+}> {
+  const res = await api.get(
+    '/api/channel/standby_pool/channels',
+    channelActionConfig({ params })
+  )
+  return res.data
+}
+
+export async function updateStandbyPool(data: {
+  promote_enabled: boolean
+  promote_threshold: number
+  promote_batch: number
+}): Promise<{ success: boolean; message?: string; data?: StandbyPool }> {
+  const res = await api.put(
+    '/api/channel/standby_pool',
+    data,
+    channelActionConfig()
+  )
+  return res.data
+}
+
 export async function getChannelTemplates(): Promise<{
   success: boolean
   message?: string
@@ -779,6 +820,7 @@ export async function applyChannelTemplate(
     keys?: string
     items?: { key: string; proxy?: string }[]
     name_suffix_length?: number
+    destination?: 'enabled' | 'standby'
   }
 ): Promise<ApplyChannelTemplateResponse> {
   const res = await api.post(
