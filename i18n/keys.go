@@ -19,8 +19,10 @@ const (
 	MsgAuthTokenGroupDeprecated   = "auth.token_group_deprecated"
 	MsgAuthChannelSelectForbidden = "auth.channel_select_forbidden"
 
-	MsgRateLimitReached      = "rate_limit.reached"
-	MsgRateLimitTotalReached = "rate_limit.total_reached"
+	MsgRateLimitReached          = "rate_limit.reached"
+	MsgRateLimitTotalReached     = "rate_limit.total_reached"
+	MsgGlobalModelRPMReached     = "rate_limit.global_model_reached"
+	MsgGlobalModelRPMUnavailable = "rate_limit.global_model_unavailable"
 
 	MsgDistributorInvalidRequest               = "distributor.invalid_request"
 	MsgDistributorInvalidChannelId             = "distributor.invalid_channel_id"

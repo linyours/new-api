@@ -97,6 +97,12 @@ func Distribute() func(c *gin.Context) {
 				}
 			}
 		}
+		if shouldSelectChannel {
+			if limitErr := CheckGlobalModelRPM(c, modelRequest.Model); limitErr != nil {
+				abortWithOpenAiMessage(c, limitErr.StatusCode, limitErr.Error(), limitErr.GetErrorCode())
+				return
+			}
+		}
 		if pinned || shouldSelectChannel {
 			usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 			var selectErr *service.ChannelSelectError

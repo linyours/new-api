@@ -101,7 +101,8 @@ func classifyFailure(local bool, code, errorType string, status int) Outcome {
 		switch types.ErrorCode(code) {
 		case types.ErrorCodeInvalidRequest, types.ErrorCodeSensitiveWordsDetected, types.ErrorCodeReadRequestBodyFailed,
 			types.ErrorCodeConvertRequestFailed, types.ErrorCodeAccessDenied, types.ErrorCodeBadRequestBody,
-			types.ErrorCodeInsufficientUserQuota, types.ErrorCodePreConsumeTokenQuotaFailed, types.ErrorCodePromptBlocked:
+			types.ErrorCodeInsufficientUserQuota, types.ErrorCodePreConsumeTokenQuotaFailed, types.ErrorCodePromptBlocked,
+			"global_model_rate_limit_exceeded", "global_model_rate_limit_unavailable":
 			return OutcomeIgnored
 		}
 		return OutcomeFailure

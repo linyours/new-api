@@ -565,6 +565,14 @@ func RelayTask(c *gin.Context) {
 		respondTaskSubmissionError(c, taskErr)
 		return
 	}
+	// Derived tasks (for example video remix) learn their model from the
+	// authorized origin task, after Distribute. Admission is idempotent for
+	// submissions whose model was already available to the distributor.
+	if limitErr := middleware.CheckGlobalModelRPM(c, relayInfo.OriginModelName); limitErr != nil {
+		taskErr = service.TaskErrorWrapperLocal(limitErr, string(limitErr.GetErrorCode()), limitErr.StatusCode)
+		respondTaskSubmissionError(c, taskErr)
+		return
+	}
 
 	var outcome *taskSubmissionOutcome
 	outcome, taskErr = executeTaskSubmission(c, relayInfo)
@@ -963,7 +971,8 @@ func respondTaskSubmissionError(c *gin.Context, taskErr *taskdto.TaskError) {
 
 // respondTaskError 统一输出 Task 错误响应（含 429 限流提示改写）
 func respondTaskError(c *gin.Context, taskErr *taskdto.TaskError) {
-	if taskErr.StatusCode == http.StatusTooManyRequests {
+	globalModelLimited := taskErr.LocalError && taskErr.Code == "global_model_rate_limit_exceeded"
+	if taskErr.StatusCode == http.StatusTooManyRequests && !globalModelLimited {
 		taskErr.Message = i18n.T(c, i18n.MsgRelayGroupUpstreamSaturated)
 	}
 	c.JSON(taskErr.StatusCode, taskErr)

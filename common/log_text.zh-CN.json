@@ -452,6 +452,7 @@
   "failed to cache refresh-reuse session revoke: %s": "刷新令牌被重复使用，会话已吊销，写入缓存失败: %s",
   "failed to charge violation fee: %s": "违规扣费失败: %s",
   "failed to check channel status before closing active websockets: channel_id=%d, error=%v": "关闭 WebSocket 连接前查询渠道状态失败: channel_id=%d, error=%v",
+  "failed to check global model RPM: %s": "检查全站模型 RPM 限制失败: %s",
   "failed to check notification limit: %s": "检查通知频率限制失败: %s",
   "failed to check the successful request limit: %s": "检查成功请求数限制失败: %s",
   "failed to check the total request limit: %s": "检查总请求数限制失败: %s",

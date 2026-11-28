@@ -4,6 +4,7 @@ import (
 	"maps"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -22,6 +23,8 @@ type Option struct {
 	Key   string `json:"key" gorm:"primaryKey"`
 	Value string `json:"value"`
 }
+
+var globalModelRateLimitOptionMutex sync.Mutex
 
 func AllOption() ([]*Option, error) {
 	var options []*Option
@@ -153,6 +156,7 @@ func InitOptionMap() {
 	common.OptionMap["ModelRequestRateLimitDurationMinutes"] = strconv.Itoa(setting.ModelRequestRateLimitDurationMinutes)
 	common.OptionMap["ModelRequestRateLimitSuccessCount"] = strconv.Itoa(setting.ModelRequestRateLimitSuccessCount)
 	common.OptionMap["ModelRequestRateLimitGroup"] = setting.ModelRequestRateLimitGroup2JSONString()
+	common.OptionMap[setting.GlobalModelRateLimitOptionKey] = setting.GlobalModelRateLimitJSON()
 	common.OptionMap["ModelRatio"] = ratio_setting.ModelRatio2JSONString()
 	common.OptionMap["ModelPrice"] = ratio_setting.ModelPrice2JSONString()
 	common.OptionMap["CacheRatio"] = ratio_setting.CacheRatio2JSONString()
@@ -202,6 +206,10 @@ func LoadOptionsFromDatabase() error {
 	defer requestPolicyOptionMutex.Unlock()
 	passkeyOptionMutex.Lock()
 	defer passkeyOptionMutex.Unlock()
+	// Serialize the read and publication with saves of the RPM option, so a
+	// reload cannot overwrite a freshly saved limit with an older DB snapshot.
+	globalModelRateLimitOptionMutex.Lock()
+	defer globalModelRateLimitOptionMutex.Unlock()
 	options, err := AllOption()
 	if err != nil {
 		return err
@@ -237,6 +245,10 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if key == setting.GlobalModelRateLimitOptionKey {
+		_, err := setting.ParseGlobalModelRateLimit(value)
+		return err
+	}
 	if key == legacyAccessTokenRetireAtKey {
 		return errLegacyRetireAtReadOnly
 	}
@@ -289,6 +301,9 @@ func validateOptionValue(key string, value string) error {
 }
 
 func UpdateOption(key string, value string) error {
+	if key == setting.GlobalModelRateLimitOptionKey {
+		return UpdateOptionsBulk(map[string]string{key: value})
+	}
 	if IsRequestPolicyOption(key) {
 		return UpdateRequestPolicyOptions(map[string]string{key: value})
 	}
@@ -358,6 +373,10 @@ func UpdateOptionsBulk(values map[string]string) error {
 		}
 	}
 
+	if _, ok := values[setting.GlobalModelRateLimitOptionKey]; ok {
+		globalModelRateLimitOptionMutex.Lock()
+		defer globalModelRateLimitOptionMutex.Unlock()
+	}
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		for k, v := range values {
 			option := Option{Key: k}
@@ -395,6 +414,11 @@ func updateOptionMap(key string, value string) (err error) {
 	}
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
+	if key == setting.GlobalModelRateLimitOptionKey {
+		if err := setting.UpdateGlobalModelRateLimit(value); err != nil {
+			return err
+		}
+	}
 	common.OptionMap[key] = value
 
 	// 检查是否是模型配置 - 使用更规范的方式处理

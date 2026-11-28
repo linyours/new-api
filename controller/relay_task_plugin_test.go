@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay"
@@ -672,6 +673,51 @@ func TestRespondTaskSubmissionErrorWithoutCause(t *testing.T) {
 	assert.Equal(t, service.PolicyDecision{Action: "stop", Reason: "request_failed", Source: "system"}, events[0].Decision)
 	assert.Equal(t, http.StatusServiceUnavailable, events[0].Status)
 	assert.Equal(t, service.PolicyDecision{Action: "stop", Reason: "local_rejection", Source: "system"}, decideTaskRetry(c, &dto.TaskError{StatusCode: http.StatusForbidden, LocalError: true, Message: "billing"}, 2), "local errors stop once the status rules do not force a retry")
+}
+
+func TestTaskSubmissionRateLimitErrorMessage(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	for _, tc := range []struct {
+		name    string
+		code    string
+		local   bool
+		message string
+		want    string
+	}{
+		{
+			name:    "global model RPM retains its public message",
+			code:    "global_model_rate_limit_exceeded",
+			local:   true,
+			message: "Resource exhausted. Please try again later...",
+			want:    "Resource exhausted. Please try again later...",
+		},
+		{
+			name:    "upstream rate limit retains its capacity message",
+			code:    "upstream_rate_limit",
+			message: "upstream throttled",
+			want:    "The upstream of the current group is at capacity. Please try again later",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(response)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/task_original/remix", nil)
+			c.Request.Header.Set("Accept-Language", "en")
+			c.Header("Retry-After", "60")
+			respondTaskSubmissionError(c, &dto.TaskError{
+				Code:       tc.code,
+				Message:    tc.message,
+				StatusCode: http.StatusTooManyRequests,
+				LocalError: tc.local,
+			})
+			assert.Equal(t, http.StatusTooManyRequests, response.Code)
+			assert.Equal(t, "60", response.Header().Get("Retry-After"))
+			var body dto.TaskError
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &body))
+			assert.Equal(t, tc.code, body.Code)
+			assert.Equal(t, tc.want, body.Message)
+		})
+	}
 }
 
 func TestExecuteTaskSubmissionRefundsWhenFinalReserveFails(t *testing.T) {

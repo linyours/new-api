@@ -401,6 +401,7 @@ export type OperationsSettings = {
 }
 
 export type SecuritySettings = {
+  GlobalModelRateLimit: string
   ModelRequestRateLimitEnabled: boolean
   ModelRequestRateLimitCount: number
   ModelRequestRateLimitSuccessCount: number

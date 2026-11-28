@@ -297,6 +297,9 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 	if apiErr = checkResponsesWSModelAccess(c, modelName); apiErr != nil {
 		return apiErr
 	}
+	if apiErr = middleware.CheckGlobalModelRPM(c, modelName); apiErr != nil {
+		return apiErr
+	}
 	service.GetChannelConstraints(c).AddFilter(appdto.ChannelFilter{Kind: appdto.FilterRequestPath, RequestPath: c.Request.URL.Path})
 
 	if s.lockedChannelID != 0 {

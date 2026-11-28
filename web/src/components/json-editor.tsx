@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Code, Table, Plus, Trash2 } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { JsonCodeEditor } from '@/components/json-code-editor'
@@ -35,6 +35,8 @@ type JsonEditorProps = {
   emptyMessage?: string
   template?: Record<string, unknown>
   valueType?: 'string' | 'number' | 'any'
+  strict?: boolean
+  allowJsonMode?: boolean
 }
 
 type EditorRow = {
@@ -71,6 +73,8 @@ export function JsonEditor({
   emptyMessage,
   template,
   valueType = 'string',
+  strict = false,
+  allowJsonMode = true,
 }: JsonEditorProps) {
   const { t } = useTranslation()
   const resolvedEmptyMessage =
@@ -82,6 +86,7 @@ export function JsonEditor({
   const [mode, setMode] = useState<'visual' | 'json'>('visual')
   const [rows, setRows] = useState<EditorRow[]>(() => parseJsonRows(value))
   const [jsonValue, setJsonValue] = useState(value)
+  const nextRowId = useRef(0)
 
   const parseJsonToRows = (json: string) => {
     setRows(parseJsonRows(json))
@@ -100,7 +105,18 @@ export function JsonEditor({
     if (updatedRows.length === 0) {
       return ''
     }
-    const obj: Record<string, unknown> = {}
+    const obj: Record<string, unknown> = Object.create(null)
+    const keys = new Set<string>()
+    if (strict) {
+      for (const row of updatedRows) {
+        const key = row.key.trim()
+        if (!key || keys.has(key) || !row.value.trim()) return '{'
+        if (valueType === 'number' && !Number.isFinite(Number(row.value))) {
+          return '{'
+        }
+        keys.add(key)
+      }
+    }
     updatedRows.forEach((row) => {
       if (row.key.trim()) {
         let parsedValue: unknown = row.value.trim()
@@ -126,12 +142,17 @@ export function JsonEditor({
 
   const handleAddRow = () => {
     const newRow: EditorRow = {
-      id: `${Date.now()}`,
+      id: `new-${nextRowId.current++}`,
       key: '',
       value: '',
     }
     const updatedRows = [...rows, newRow]
     setRows(updatedRows)
+    if (strict) {
+      const json = convertRowsToJson(updatedRows)
+      setJsonValue(json)
+      onChange(json)
+    }
   }
 
   const handleDeleteRow = (id: string) => {
@@ -188,25 +209,27 @@ export function JsonEditor({
     <div className='space-y-2'>
       <div className='flex items-center justify-between'>
         <div className='flex gap-2'>
-          <Button
-            type='button'
-            variant='outline'
-            size='sm'
-            onClick={toggleMode}
-            disabled={disabled}
-          >
-            {mode === 'visual' ? (
-              <>
-                <Code className='mr-2 h-4 w-4' />
-                {t('JSON Mode')}
-              </>
-            ) : (
-              <>
-                <Table className='mr-2 h-4 w-4' />
-                {t('Visual Mode')}
-              </>
-            )}
-          </Button>
+          {allowJsonMode && (
+            <Button
+              type='button'
+              variant='outline'
+              size='sm'
+              onClick={toggleMode}
+              disabled={disabled}
+            >
+              {mode === 'visual' ? (
+                <>
+                  <Code className='mr-2 h-4 w-4' />
+                  {t('JSON Mode')}
+                </>
+              ) : (
+                <>
+                  <Table className='mr-2 h-4 w-4' />
+                  {t('Visual Mode')}
+                </>
+              )}
+            </Button>
+          )}
           {template && (
             <Button
               type='button'
@@ -242,6 +265,7 @@ export function JsonEditor({
                       handleRowChange(row.id, 'key', e.target.value)
                     }
                     placeholder={resolvedKeyPlaceholder}
+                    aria-label={resolvedKeyLabel}
                     disabled={disabled}
                   />
                   <Input
@@ -250,13 +274,14 @@ export function JsonEditor({
                       handleRowChange(row.id, 'value', e.target.value)
                     }
                     placeholder={resolvedValuePlaceholder}
+                    aria-label={resolvedValueLabel}
                     disabled={disabled}
                   />
                   <Button
                     type='button'
                     variant='ghost'
                     size='icon'
-                    aria-label='Delete row'
+                    aria-label={t('Delete row')}
                     onClick={() => handleDeleteRow(row.id)}
                     disabled={disabled}
                     className='h-10 w-10'

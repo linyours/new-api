@@ -1,20 +1,30 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"hash/maphash"
+	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/i18n"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -196,4 +206,294 @@ func TestModelRateLimitCountsConfiguredGroupsSeparately(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGlobalModelRPMConfigurationRejectsAmbiguousAndUnboundedLimits(t *testing.T) {
+	previous := setting.GlobalModelRateLimitJSON()
+	t.Cleanup(func() { require.NoError(t, setting.UpdateGlobalModelRateLimit(previous)) })
+	require.NoError(t, setting.UpdateGlobalModelRateLimit(`{"enabled":true,"limits":{"global-config-model":3}}`))
+	for _, value := range []string{
+		`null`, `{}`, `{"enabled":true,"limits":null}`, `{"enabled":true,"limits":{"m":null}}`,
+		`{"enabled":true,"limits":{"m":-1}}`, `{"enabled":true,"limits":{"m":1.5}}`,
+		`{"enabled":true,"limits":{"m":100001}}`, `{"enabled":true,"limits":{" ":1}}`,
+		`{"enabled":true,"limits":{"m":1,"m":2}}`, `{"enabled":true,"limits":{"m":1," m ":2}}`,
+		`{"enabled":false,"enabled":true,"limits":{}}`, `{"enabled":true,"limits":{},"unexpected":1}`,
+	} {
+		assert.Error(t, setting.UpdateGlobalModelRateLimit(value), value)
+		assert.Equal(t, 3, setting.GlobalModelRPM("global-config-model"), "invalid updates must preserve the active configuration")
+	}
+	large := make(map[string]int)
+	for index := range 1001 {
+		large[fmt.Sprintf("model-%d", index)] = 1
+	}
+	data, err := common.Marshal(map[string]any{"enabled": true, "limits": large})
+	require.NoError(t, err)
+	assert.Error(t, setting.UpdateGlobalModelRateLimit(string(data)))
+	config, err := setting.ParseGlobalModelRateLimit(`{"enabled":true,"limits":{" m ":0,"other":100000}}`)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"m": 0, "other": 100000}, config.Limits)
+}
+
+func TestGlobalModelRPMSharedAdmissionAndFailureCounting(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	previous := setting.GlobalModelRateLimitJSON()
+	previousRedis := common.RedisEnabled
+	t.Cleanup(func() {
+		require.NoError(t, setting.UpdateGlobalModelRateLimit(previous))
+		common.RedisEnabled = previousRedis
+	})
+	for _, backend := range []string{"memory", "redis"} {
+		t.Run(backend, func(t *testing.T) {
+			common.RedisEnabled = false
+			if backend == "redis" {
+				useRateLimitMiniRedis(t)
+			}
+			name := fmt.Sprintf("global-shared-%s-%d", backend, modelRateLimitTestUsers.Add(1))
+			other := name + "-other"
+			require.NoError(t, setting.UpdateGlobalModelRateLimit(fmt.Sprintf(`{"enabled":true,"limits":{%q:2,%q:1}}`, name, other)))
+			router := gin.New()
+			router.GET("/:model/:user/:channel/:outcome", func(c *gin.Context) {
+				userID, err := strconv.Atoi(c.Param("user"))
+				require.NoError(t, err)
+				channelID, err := strconv.Atoi(c.Param("channel"))
+				require.NoError(t, err)
+				c.Set("id", userID)
+				c.Set("token_id", userID*100)
+				c.Set("channel_id", channelID)
+				common.SetContextKey(c, constant.ContextKeyUsingGroup, c.Param("user"))
+				if apiErr := CheckGlobalModelRPM(c, c.Param("model")); apiErr != nil {
+					assert.Equal(t, "status_code=429, Resource exhausted. Please try again later...", apiErr.ErrorWithStatusCode())
+					abortWithOpenAiMessage(c, apiErr.StatusCode, apiErr.Error(), apiErr.GetErrorCode())
+					return
+				}
+				// Repeated checks/retries within one request must not consume twice.
+				require.Nil(t, CheckGlobalModelRPM(c, c.Param("model")))
+				if c.Param("outcome") == "failed" {
+					c.Status(http.StatusBadGateway)
+				} else {
+					c.Status(http.StatusOK)
+				}
+			})
+			assert.Equal(t, http.StatusBadGateway, performRateLimitRequest(router, "/"+name+"/1/11/failed", "127.0.0.1:1000").Code)
+			assert.Equal(t, http.StatusOK, performRateLimitRequest(router, "/"+name+"/2/22/ok", "127.0.0.1:1000").Code)
+			for _, language := range []string{"", "en", "zh-CN", "zh-TW"} {
+				request := httptest.NewRequest(http.MethodGet, "/"+name+"/3/33/ok", nil)
+				request.Header.Set("Accept-Language", language)
+				response := httptest.NewRecorder()
+				router.ServeHTTP(response, request)
+				assert.Equal(t, http.StatusTooManyRequests, response.Code)
+				assert.Equal(t, "60", response.Header().Get("Retry-After"))
+				assert.JSONEq(t, `{"error":{"message":"Resource exhausted. Please try again later... (request id: )","type":"new_api_error","code":"global_model_rate_limit_exceeded"}}`, response.Body.String(), "language %q", language)
+			}
+			assert.Equal(t, http.StatusOK, performRateLimitRequest(router, "/"+other+"/3/33/ok", "127.0.0.1:1000").Code)
+			assert.Equal(t, http.StatusOK, performRateLimitRequest(router, "/unconfigured/3/33/ok", "127.0.0.1:1000").Code)
+		})
+	}
+}
+
+func TestGlobalModelRPMMemorySlidingWindowAndLimitDecrease(t *testing.T) {
+	limiter := globalModelRPMMemoryLimiter{seed: maphash.MakeSeed()}
+	now := time.Now()
+	assert.Zero(t, limiter.take("m", 3, now))
+	assert.Zero(t, limiter.take("m", 3, now.Add(10*time.Second)))
+	assert.Zero(t, limiter.take("m", 3, now.Add(20*time.Second)))
+	assert.Equal(t, 30, limiter.take("m", 3, now.Add(30*time.Second)))
+	assert.Equal(t, 50, limiter.take("m", 1, now.Add(30*time.Second)), "lowering the cap retains all accepted traffic")
+	assert.Equal(t, 1, limiter.take("m", 3, now.Add(60*time.Second-time.Nanosecond)))
+	assert.Zero(t, limiter.take("m", 3, now.Add(60*time.Second)))
+	assert.Equal(t, 10, limiter.take("m", 3, now.Add(60*time.Second)))
+	assert.Zero(t, limiter.take("m", 1, now.Add(121*time.Second)))
+}
+
+func TestGlobalModelRPMConcurrentAdmission(t *testing.T) {
+	for _, backend := range []string{"memory", "redis"} {
+		t.Run(backend, func(t *testing.T) {
+			limiter := globalModelRPMMemoryLimiter{seed: maphash.MakeSeed()}
+			var client *redis.Client
+			if backend == "redis" {
+				_, client = useRateLimitMiniRedis(t)
+			}
+			const requests, limit = 24, 7
+			var admitted atomic.Int64
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for index := range requests {
+				wg.Go(func() {
+					<-start
+					var retry int
+					if client != nil {
+						var err error
+						retry, err = globalModelRPMScript.Run(context.Background(), client, []string{"test:global-rpm-concurrent"}, limit, strconv.Itoa(index)).Int()
+						if !assert.NoError(t, err) {
+							return
+						}
+					} else {
+						retry = limiter.take("m", limit, time.Now())
+					}
+					if retry == 0 {
+						admitted.Add(1)
+					}
+				})
+			}
+			close(start)
+			wg.Wait()
+			assert.EqualValues(t, limit, admitted.Load())
+		})
+	}
+}
+
+func TestGlobalModelRPMRedisWindowDoesNotExtendOnRejection(t *testing.T) {
+	server, client := useRateLimitMiniRedis(t)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	server.SetTime(now)
+	ctx := context.Background()
+	key := "test:global-rpm-expiry"
+	first, err := globalModelRPMScript.Run(ctx, client, []string{key}, 1, "first").Int()
+	require.NoError(t, err)
+	assert.Zero(t, first)
+	duplicate, err := globalModelRPMScript.Run(ctx, client, []string{key}, 1, "first").Int()
+	require.NoError(t, err)
+	assert.Zero(t, duplicate, "a Redis transport retry must be idempotent")
+	server.FastForward(30 * time.Second)
+	server.SetTime(now.Add(30 * time.Second))
+	blocked, err := globalModelRPMScript.Run(ctx, client, []string{key}, 1, "blocked").Int()
+	require.NoError(t, err)
+	assert.Equal(t, 30, blocked)
+	assert.Equal(t, 30*time.Second, server.TTL(key))
+	assert.EqualValues(t, 1, client.ZCard(ctx, key).Val())
+	server.SetTime(now.Add(time.Minute)) // Exercise pruning, independently of Redis key expiry.
+	allowed, err := globalModelRPMScript.Run(ctx, client, []string{key}, 1, "next").Int()
+	require.NoError(t, err)
+	assert.Zero(t, allowed)
+	assert.EqualValues(t, 1, client.ZCard(ctx, key).Val())
+}
+
+func TestGlobalModelRPMRedisFailureIsClosedAndDisabledModelsBypass(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	_, client := useRateLimitMiniRedis(t)
+	require.NoError(t, client.Close())
+	previous := setting.GlobalModelRateLimitJSON()
+	t.Cleanup(func() { require.NoError(t, setting.UpdateGlobalModelRateLimit(previous)) })
+	require.NoError(t, setting.UpdateGlobalModelRateLimit(`{"enabled":true,"limits":{"global-failure":1,"zero":0}}`))
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	apiErr := CheckGlobalModelRPM(c, "global-failure")
+	require.NotNil(t, apiErr)
+	assert.Equal(t, http.StatusServiceUnavailable, apiErr.StatusCode)
+	assert.Equal(t, "global_model_rate_limit_unavailable", string(apiErr.GetErrorCode()))
+	assert.Nil(t, CheckGlobalModelRPM(c, "zero"))
+	assert.Nil(t, CheckGlobalModelRPM(c, "unconfigured"))
+	require.NoError(t, setting.UpdateGlobalModelRateLimit(`{"enabled":false,"limits":{"global-failure":1}}`))
+	assert.Nil(t, CheckGlobalModelRPM(c, "global-failure"))
+}
+
+func TestGlobalModelRPMDistributeCoversRequestFormatsBeforeSelection(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	useRateLimitMiniRedis(t)
+	previous := setting.GlobalModelRateLimitJSON()
+	t.Cleanup(func() { require.NoError(t, setting.UpdateGlobalModelRateLimit(previous)) })
+	require.NoError(t, setting.UpdateGlobalModelRateLimit(`{"enabled":true,"limits":{"global-format":1}}`))
+	admitted, _ := gin.CreateTestContext(httptest.NewRecorder())
+	admitted.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	require.Nil(t, CheckGlobalModelRPM(admitted, "global-format"))
+	for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/messages", "/v1/images/generations", "/v1/audio/speech", "/v1/audio/transcriptions", "/v1/images/edits", "/v1/videos", "/v1beta/models/global-format:generateContent", "/v1/realtime?model=global-format", "/pg/chat/completions", "/tasks/submit/example"} {
+		t.Run(path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(response)
+			c.Request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"global-format"}`))
+			c.Request.Header.Set("Content-Type", "application/json")
+			if path == "/v1/audio/transcriptions" || path == "/v1/images/edits" || path == "/v1/videos" {
+				var body bytes.Buffer
+				form := multipart.NewWriter(&body)
+				require.NoError(t, form.WriteField("model", "global-format"))
+				require.NoError(t, form.Close())
+				c.Request = httptest.NewRequest(http.MethodPost, path, &body)
+				c.Request.Header.Set("Content-Type", form.FormDataContentType())
+			}
+			if strings.HasPrefix(path, "/tasks/") {
+				c.Set("resolved_task_model", "global-format")
+			}
+			Distribute()(c)
+			assert.Equal(t, http.StatusTooManyRequests, response.Code)
+			assert.Contains(t, response.Body.String(), "global_model_rate_limit_exceeded")
+		})
+	}
+	t.Run("pinned channel still shares the global limit", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(response)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"global-format"}`))
+		c.Request.Header.Set("Content-Type", "application/json")
+		service.GetChannelConstraints(c).AddPin(dto.ChannelPin{
+			ChannelId: 1,
+			Source:    dto.PinSourceToken,
+			Rank:      dto.PinRankToken,
+			RetryMode: dto.PinRetrySingleAttempt,
+		})
+		Distribute()(c)
+		assert.Equal(t, http.StatusTooManyRequests, response.Code)
+		assert.Contains(t, response.Body.String(), "global_model_rate_limit_exceeded")
+	})
+	for _, path := range []string{"/v1/videos/task_id", "/v1/video/generations/task_id", "/mj/task/task_id/fetch"} {
+		t.Run("poll "+path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(response)
+			c.Request = httptest.NewRequest(http.MethodGet, path, nil)
+			Distribute()(c)
+			assert.False(t, c.IsAborted(), "task polling must not be blocked by submission RPM")
+			assert.Empty(t, response.Header().Get("Retry-After"))
+		})
+	}
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"global-format"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(c, constant.ContextKeyTokenModelLimitEnabled, true)
+	Distribute()(c)
+	assert.Equal(t, http.StatusForbidden, response.Code, "model authorization must precede RPM admission")
+}
+
+func TestGlobalModelRPMRealRedisSharedClients(t *testing.T) {
+	address := os.Getenv("TEST_GLOBAL_RPM_REDIS_ADDR")
+	if address == "" {
+		t.Skip("TEST_GLOBAL_RPM_REDIS_ADDR is not configured")
+	}
+	ctx := context.Background()
+	first := redis.NewClient(&redis.Options{Addr: address})
+	second := redis.NewClient(&redis.Options{Addr: address})
+	t.Cleanup(func() { _ = first.Close(); _ = second.Close() })
+	key := "test:global-model-rpm:" + t.Name()
+	require.NoError(t, first.Del(ctx, key).Err())
+	t.Cleanup(func() { _ = first.Del(ctx, key).Err() })
+	result, err := globalModelRPMScript.Run(ctx, first, []string{key}, 1, "first-instance").Int()
+	require.NoError(t, err)
+	assert.Zero(t, result)
+	result, err = globalModelRPMScript.Run(ctx, second, []string{key}, 1, "second-instance").Int()
+	require.NoError(t, err)
+	assert.Positive(t, result)
+	assert.EqualValues(t, 1, second.ZCard(ctx, key).Val())
+
+	concurrentKey := key + ":concurrent"
+	require.NoError(t, first.Del(ctx, concurrentKey).Err())
+	t.Cleanup(func() { _ = first.Del(ctx, concurrentKey).Err() })
+	const requests, limit = 24, 7
+	var admitted atomic.Int64
+	var workers sync.WaitGroup
+	start := make(chan struct{})
+	clients := []*redis.Client{first, second}
+	for index := range requests {
+		workers.Go(func() {
+			<-start
+			retry, err := globalModelRPMScript.Run(ctx, clients[index%len(clients)], []string{concurrentKey}, limit, strconv.Itoa(index)).Int()
+			if !assert.NoError(t, err) {
+				return
+			}
+			if retry == 0 {
+				admitted.Add(1)
+			}
+		})
+	}
+	close(start)
+	workers.Wait()
+	assert.EqualValues(t, limit, admitted.Load(), "two clients must not admit beyond the shared limit")
+	assert.EqualValues(t, limit, second.ZCard(ctx, concurrentKey).Val())
 }

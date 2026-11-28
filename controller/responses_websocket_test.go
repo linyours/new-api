@@ -1428,3 +1428,43 @@ func TestResponsesWebSocketPreRoutingRejectionsFollowHealthClassification(t *tes
 		})
 	}
 }
+
+func TestResponsesWebSocketGlobalModelRPMSharesHTTPBudgetBeforeBilling(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	fixture := newResponsesWSBillingTest(t, `p * 2`, func(ws *websocket.Conn, r *http.Request) {
+		for {
+			if _, _, err := ws.ReadMessage(); err != nil {
+				return
+			}
+			if !assert.NoError(t, ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"resp_global_rpm","status":"completed","model":"ws-billing","output":[],"usage":{"input_tokens":1000,"output_tokens":10,"total_tokens":1010}}}`))) {
+				return
+			}
+		}
+	})
+	previous := setting.GlobalModelRateLimitJSON()
+	t.Cleanup(func() { require.NoError(t, setting.UpdateGlobalModelRateLimit(previous)) })
+	require.NoError(t, setting.UpdateGlobalModelRateLimit(`{"enabled":true,"limits":{"ws-billing":1}}`))
+	create := []byte(`{"type":"response.create","model":"ws-billing","input":"hello"}`)
+	require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, create))
+	assert.Equal(t, "response.completed", readResponsesWSTestEvent(t, fixture.client)["type"])
+	require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, create))
+	rejected := readResponsesWSTestEvent(t, fixture.client)
+	assert.Equal(t, "error", rejected["type"])
+	assert.Equal(t, float64(http.StatusTooManyRequests), rejected["status"])
+	errorBody, ok := rejected["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "global_model_rate_limit_exceeded", errorBody["code"])
+	assert.Equal(t, "Resource exhausted. Please try again later...", errorBody["message"])
+	request, err := http.NewRequest(http.MethodPost, fixture.gatewayURL+"/v1/responses", strings.NewReader(`{"model":"ws-billing","input":"hello","stream":true}`))
+	require.NoError(t, err)
+	request.Header.Set("Authorization", "Bearer sk-"+fixture.token.Key)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 3 * time.Second}).Do(request)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	assert.Equal(t, http.StatusTooManyRequests, response.StatusCode)
+	assert.NotEmpty(t, response.Header.Get("Retry-After"))
+	fixture.closeAndWait(t)
+	assertResponsesWSAccounting(t, fixture, []int{1000})
+	assert.EqualValues(t, 1, fixture.connections.Load())
+}

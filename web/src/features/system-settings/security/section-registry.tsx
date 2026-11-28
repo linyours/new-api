@@ -1,3 +1,4 @@
+import { GlobalModelRateLimitSection } from '../request-limits/global-model-rate-limit-section'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -23,6 +24,13 @@ import type { SecuritySettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 
 const SECURITY_SECTIONS = [
+  {
+    id: 'global-model-rate-limit',
+    titleKey: 'Site-wide model RPM limits',
+    build: (settings: SecuritySettings) => (
+      <GlobalModelRateLimitSection value={settings.GlobalModelRateLimit} />
+    ),
+  },
   {
     id: 'rate-limit',
     titleKey: 'Rate Limiting',
